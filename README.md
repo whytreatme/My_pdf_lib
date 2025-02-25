@@ -9,5 +9,6 @@
 5.网卡与网络适配器 2025/2/23 first review  
 6.广播的作用    2025/2/23 first review  
 7.环回地址      2025/2/23 first review  
-8.公网与私网     2025/2/23 first review
+8.公网与私网     2025/2/23 first review  
+9.root与ftp     2025/2/25 first review
 
