@@ -11,5 +11,8 @@
 7.环回地址      2025/2/23 first review  
 8.公网与私网     2025/2/23 first review  
 9.root与ftp     2025/2/25 first review  
-10. http代理     2025/2/26 first review
+10. http代理     2025/2/26 first review  
+
+## linux学习类  
+1.
 
