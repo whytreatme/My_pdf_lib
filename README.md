@@ -17,5 +17,7 @@
 1._etc目录作用  2025/2/28 first review  
 2.通配符        2025/2/28 first review  
 3._etc_password的解释  2025/2/28 first review  
-4.分布编译       2025/2/28  first review
+4.分布编译       2025/2/28  first review  
+5.chmod的使用    2025/2/28  first review  
+6.chmod的用法    2025/2/28  first review
 
