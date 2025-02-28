@@ -14,5 +14,7 @@
 10. http代理     2025/2/26 first review  
 
 ## linux学习类  
-1._etc目录作用  2025/2/28 first review
+1._etc目录作用  2025/2/28 first review  
+2.通配符        2025/2/28 first review  
+3._etc password
 
