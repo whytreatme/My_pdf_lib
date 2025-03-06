@@ -19,5 +19,10 @@
 3._etc_password的解释  2025/2/28 first review  
 4.分布编译       2025/2/28  first review  
 5.chmod的使用    2025/2/28  first review  
-6.chmod的用法    2025/2/28  first review
+6.chmod命令的作用 2025/2/28  first review
+7.chmod的使用    2025/3/6   second review
+8.chomd命令的作用 2025/3/6   second review
+9.bash_history在哪个文件夹下 2025/3/6 second review
+10.type命令       2025/3/6   first review
+
 
