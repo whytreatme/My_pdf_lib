@@ -24,6 +24,10 @@
 8.chomd命令的作用 2025/3/6   second review  
 9.bash_history在哪个文件夹下 2025/3/6 second review  
 10.type命令       2025/3/6   first review  
-11._sh类型        2025/3/6   first review
+11._sh类型        2025/3/6   first review  
+12.grep命令的使用  2025/3/7   second review  
+13.test命令的用法  2025/3/7   first review  
+14.test里的与计算  2025/3/7   first review  
+
 
 
