@@ -29,5 +29,10 @@
 13.test命令的用法  2025/3/7   first review  
 14.test里的与计算  2025/3/7   first review  
 
+## deep learning类  
+1.set    2025/3/7   first review  
+2.def关键字 2025/3/7 first review  
+3.del关键字的用法 2025/3/7 first review
+
 
 
