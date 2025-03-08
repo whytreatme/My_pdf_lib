@@ -28,11 +28,15 @@
 12.grep命令的使用  2025/3/7   second review  
 13.test命令的用法  2025/3/7   first review  
 14.test里的与计算  2025/3/7   first review  
+15.HDD与SDD分区机制 2025/3/8  first review  
+16.HDFS_put覆盖原文件 2025/3/8 first review  
+17.HDFS文件日志     2025/3/8  first review  
+18.HDFS没有cd命令   2025/3/8   first review
 
 ## deep learning类  
 1.set    2025/3/7   first review  
 2.def关键字 2025/3/7 first review  
-3.del关键字的用法 2025/3/7 first review
+3.del关键字的用法 2025/3/7 first review  
 
 
 
