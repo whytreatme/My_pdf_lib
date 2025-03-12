@@ -12,6 +12,7 @@
 8.公网与私网     2025/2/23 first review  
 9.root与ftp     2025/2/25 first review  
 10. http代理     2025/2/26 first review  
+11...问题引出http代理及端口通信问题 2025/3/12 first review
 
 ## linux学习类  
 1._etc目录作用  2025/2/28 first review  
