@@ -32,7 +32,10 @@
 15.HDD与SDD分区机制 2025/3/8  first review  
 16.HDFS_put覆盖原文件 2025/3/8 first review  
 17.HDFS文件日志     2025/3/8  first review  
-18.HDFS没有cd命令   2025/3/8   first review
+18.HDFS没有cd命令   2025/3/8   first review  
+19.PATH变量设置     2025/3/14  first review  
+20.PATH环境变量的化简 2025/3/14  first review  
+21.PATH变量的格式    2025/3/14   first review
 
 ## deep learning类  
 1.set    2025/3/7   first review  
