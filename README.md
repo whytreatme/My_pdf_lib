@@ -44,7 +44,8 @@
 
 ## MySQL_learning类
 1.码键的厘清  2025/3/17 first review  
-2.DELIMITER改变默认分隔符 2025/3/18 first review
+2.DELIMITER改变默认分隔符 2025/3/18 first review  
+3.COUNT()关于子查询   2025/3/19  first review
 
 
 
