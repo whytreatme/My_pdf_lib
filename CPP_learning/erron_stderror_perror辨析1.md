@@ -113,4 +113,4 @@ File does not exist
     
 -     `strerror`     把代码变成文字
     
--     `perror`     自动完成整个过程并输出
+-     `perror`     自动完成整个过程并输出 
