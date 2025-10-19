@@ -34,5 +34,28 @@ struct semid_ds {
 semget(key_t key, int nsems, int flag)
 成功返回标识符，失败返回-1  
 
+## 表征信号量自身的结构体  
+```cpp  
+struct sem{
+    unsigned short semval; /* 当前可用的进程数量 */  
+    pid_t          sempid; /* pid for last operation */
+    unsigned short semncnt; /* 等待可用资源 */
+    unsigned short semzcnt; /* 等待资源被用完 */
+
+};
+```
+## semctl()函数  
+int  semctl(int semid, int semnum, int cmd, .../* *union semun arg* */)  
+```cpp
+union semun{
+    int             val; /* for SETVAL */
+    struct semid_ds *buf;/* for IPC_STAT and IPC_SET*/
+    unsigned short  * array;/* for GETALL and SETALL*/
+};
+```  
+
+
 ## 信号量的创建与初始化  
-信号量的创建和初始化是分开的，用semget()创建，用semctl初始化
+信号量的创建和初始化是分开的，用semget()创建，用semctl初始化。  
+在semget()创建一个新的ipc的时候，semid_ds也被初始化，sem_otime = 0; sem_ctime = 当前时间; sem_nsems = nsems  
+nsems是集合中有的信号量数，新集合必须指定nsems。引用集合可以将其置为0
