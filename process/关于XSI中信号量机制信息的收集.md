@@ -33,6 +33,7 @@ struct semid_ds {
 ## semget()函数  
 semget(key_t key, int nsems, int flag)
 成功返回标识符，失败返回-1  
+nsems代表有多少个信号量槽可以使用，但是槽里的值是未定义的  
 
 ## 表征信号量自身的结构体  
 ```cpp  
@@ -45,7 +46,7 @@ struct sem{
 };
 ```
 ## semctl()函数  
-int  semctl(int semid, int semnum, int cmd, .../* *union semun arg* */)  
+int  semctl(int semid, int semnum, int cmd, .../* *union semun arg* */)，定义具体信号量中槽的值  
 ```cpp
 union semun{
     int             val; /* for SETVAL */
@@ -53,6 +54,8 @@ union semun{
     unsigned short  * array;/* for GETALL and SETALL*/
 };
 ```  
+以下是cmd出各种命令的选项
+![cmd可能的取值](https://i.imgur.com/l3KEkYZ.png)
 
 
 ## 信号量的创建与初始化  
