@@ -38,7 +38,7 @@ nsems代表有多少个信号量槽可以使用，但是槽里的值是未定义
 ## 表征信号量自身的结构体  
 ```cpp  
 struct sem{
-    unsigned short semval; /* 当前可用的进程数量 */  
+    unsigned short semval; /* 当前可用的信号量的计数 */  
     pid_t          sempid; /* pid for last operation */
     unsigned short semncnt; /* 等待可用资源 */
     unsigned short semzcnt; /* 等待资源被用完 */
