@@ -113,4 +113,4 @@ execv("/bin/ls", argv);
 
 ---
 
-要不要我帮你画一张图，把 `execl`、`execv`、`execlp`、`execvp` 四个函数的区别和参数结构整理成一张对照图？看图会更直观。
+要不要我帮你画一张图，把 `execl`、`execv`、`execlp`、`execvp` 四个函数的区别和参数结构整理成一张对照图？看图会更直观。 
