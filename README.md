@@ -12,7 +12,9 @@
 8.公网与私网     2025/2/23 first review  
 9.root与ftp     2025/2/25 first review  
 10. http代理     2025/2/26 first review  
-11...问题引出http代理及端口通信问题 2025/3/12 first review
+11...问题引出http代理及端口通信问题 2025/3/12 first review  
+12.root与ftp    2025/11/20  second review  
+13.本地代理工具与流量加密    2025/11/20 first review
 
 ## linux学习类  
 1._etc目录作用  2025/2/28 first review  
@@ -46,6 +48,14 @@
 1.码键的厘清  2025/3/17 first review  
 2.DELIMITER改变默认分隔符 2025/3/18 first review  
 3.COUNT()关于子查询   2025/3/19  first review  
+
+
+
+## process进程类  
+1.IPC_CREATE的标识符返回机制   2025/11/20 first review  
+2.IPC_PRIVATE的作用           2025/11/20 first review  
+3.IPC_key是什么有什么用        2025/11/20 first review
+  
 
 ## markdown用法类  
 1.Markdown的换行方法 2025/10/3 first review  
