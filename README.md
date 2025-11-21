@@ -14,7 +14,10 @@
 10. http代理     2025/2/26 first review  
 11...问题引出http代理及端口通信问题 2025/3/12 first review  
 12.root与ftp    2025/11/20  second review  
-13.本地代理工具与流量加密    2025/11/20 first review
+13.本地代理工具与流量加密    2025/11/20 first review  
+14.云服务器下载镜像   2025/11/21 first review  
+15.云服务器地址转换  2025/11/21 first review  
+16.什么是SSH连接    2025/11/21 first review
 
 ## linux学习类  
 1._etc目录作用  2025/2/28 first review  
