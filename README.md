@@ -17,7 +17,10 @@
 13.本地代理工具与流量加密    2025/11/20 first review  
 14.云服务器下载镜像   2025/11/21 first review  
 15.云服务器地址转换  2025/11/21 first review  
-16.什么是SSH连接    2025/11/21 first review
+16.什么是SSH连接    2025/11/21 first review  
+17.什么是网关       2025/11/22 first review
+18.网关地址         2025/11/22 second review
+19.网关地址的选取    2025/11/22 second review
 
 ## linux学习类  
 1._etc目录作用  2025/2/28 first review  
