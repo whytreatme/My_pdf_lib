@@ -22,7 +22,7 @@
 18.网关地址         2025/11/22 second review  
 19.网关地址的选取    2025/11/22 second review  
 20.网卡与网络适配器   2025/11/23 second review  
-21.虚拟机的网络适配器  2025/11/23 first review
+21.虚拟机的网络适配器  2025/11/23 first review  
 22.调制解调器和路由器  2025/11/23 first review
 ## linux学习类  
 1._etc目录作用  2025/2/28 first review  
