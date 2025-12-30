@@ -141,6 +141,6 @@ User-Agent: curl/8.0\r\n
 你已经走在正确的路上。
 
 
-##参考资源   
+## 参考资源   
 [http协议中\r\n](https://blog.csdn.net/weixin_43844521/article/details/133965126)  
 [HTTP 报文格式是怎么分割的](https://blog.csdn.net/m0_63653444/article/details/140739023)
