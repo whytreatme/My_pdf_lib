@@ -73,7 +73,12 @@
 1.1_管程问题与生产者消费者  2026/2/3 first review    
 
 ## C++学习类  
-1.类内初始化和构造函数初始化  2026/2/18 first review  
+1.类内初始化和构造函数初始化  2026/2/18 first review   
+
+## github usage类  
+1.gitignore的使用方法     2026/2/28 first review  
+2.gitignore              2026/2/28 first review  
+
 
 
 
