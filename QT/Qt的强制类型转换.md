@@ -42,4 +42,7 @@ append 的需求：QByteArray::append 有一个重载版本 append(char c)，它
 转换：static_cast<char>(type) 就是将 unsigned char 转换为 char。这两种类型都是 1 字节的整数，它们之间的转换是安全的、定义良好的。static_cast 在这里的作用是明确地告诉编译器：“我知道我在做什么，请执行这个从无符号到有符号（或反之）的转换。” 它只允许在相关的、可以安全转换的类型之间进行，比如数字类型之间、有继承关系的类指针之间等。  
 
 ## 对比  
-与 reinterpret_cast 的区别：你不能用 static_cast 把一个 quint32* 指针转换成 char* 指针，因为它们是完全不相关的指针类型。这种“强行重新解释”的工作只能由 reinterpret_cast 来完成。
+与 reinterpret_cast 的区别：你不能用 static_cast 把一个 quint32* 指针转换成 char* 指针，因为它们是完全不相关的指针类型。这种“强行重新解释”的工作只能由 reinterpret_cast 来完成。   
+
+reinterpret_cast 用于不相关类型之间的、底层的、按位解释的转换，尤其是指针。
+static_cast 用于相关类型之间的、有明确转换规则的、更安全的转换，比如数字类型之间、类继承体系中的指针/引用转换。
