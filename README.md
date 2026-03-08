@@ -92,7 +92,8 @@
 
 ## github usage类  
 1.gitignore的使用方法     2026/2/28 first review  
-2.gitignore              2026/2/28 first review  
+2.gitignore              2026/2/28 first review    
+3.怎样关联远程仓库         2026/3/8  first review
 
 
 
