@@ -1,0 +1,6134 @@
+
+
+====================
+FILE: client\adminwidget.cpp
+====================
+
+#include "adminwidget.h"
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QInputDialog>
+#include <QMessageBox>
+#include <QDialog>
+#include <QFormLayout>
+#include <QCheckBox>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QDate>
+
+AdminWidget::AdminWidget(TcpClient* client, QWidget* parent)
+    : QWidget(parent)
+    , m_client(client)
+    , m_token(client->token())
+{
+    setupUI();
+
+    // 连接响应信号
+    connect(m_client, &TcpClient::responseReceived,
+            this, &AdminWidget::onResponseReceived);
+
+    // 自动加载所有用户列表
+    onRefreshAllUsers();
+}
+
+void AdminWidget::setupUI()
+{
+    setWindowTitle("管理员控制台");
+    setMinimumSize(900, 600);
+
+    QVBoxLayout* mainLayout = new QVBoxLayout(this);
+
+    // 创建Tab Widget
+    m_tabWidget = new QTabWidget(this);
+
+    setupAddUserTab();
+    setupAllUsersTab();
+
+    mainLayout->addWidget(m_tabWidget);
+
+    // 监听tab切换事件，切换到"所有用户"时自动刷新
+    connect(m_tabWidget, &QTabWidget::currentChanged, this, [this](int index) {
+        // 索引1是"所有用户"tab
+        if (index == 1) {
+            onRefreshAllUsers();
+        }
+    });
+
+    // 返回按钮
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    buttonLayout->addStretch();
+    QPushButton* backBtn = new QPushButton("返回", this);
+    backBtn->setMinimumSize(100, 35);
+    backBtn->setStyleSheet("QPushButton { font-size: 14px; }");
+    connect(backBtn, &QPushButton::clicked, this, &AdminWidget::closeRequested);
+    buttonLayout->addWidget(backBtn);
+    mainLayout->addLayout(buttonLayout);
+}
+
+void AdminWidget::setupAddUserTab()
+{
+    QWidget* tab = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(tab);
+
+    // 标题
+    QLabel* titleLabel = new QLabel("添加新用户", tab);
+    titleLabel->setStyleSheet("font-size: 16px; font-weight: bold;");
+    layout->addWidget(titleLabel);
+    layout->addSpacing(20);
+
+    // 表单
+    QFormLayout* formLayout = new QFormLayout();
+    formLayout->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    formLayout->setLabelAlignment(Qt::AlignRight);
+    formLayout->setSpacing(15);
+    
+    m_fullNameEdit = new QLineEdit(tab);
+    m_fullNameEdit->setPlaceholderText("请输入用户真实姓名");
+    m_fullNameEdit->setMinimumWidth(400);
+    m_fullNameEdit->setMinimumHeight(35);
+    formLayout->addRow("姓名:", m_fullNameEdit);
+    
+    m_idCardEdit = new QLineEdit(tab);
+    m_idCardEdit->setPlaceholderText("请输入18位身份证号");
+    m_idCardEdit->setMaxLength(18);
+    m_idCardEdit->setMinimumWidth(400);
+    m_idCardEdit->setMinimumHeight(35);
+    formLayout->addRow("身份证号:", m_idCardEdit);
+    
+    m_phoneEdit = new QLineEdit(tab);
+    m_phoneEdit->setPlaceholderText("请输入11位手机号");
+    m_phoneEdit->setMaxLength(11);
+    m_phoneEdit->setMinimumWidth(400);
+    m_phoneEdit->setMinimumHeight(35);
+    formLayout->addRow("手机号:", m_phoneEdit);
+    
+    m_birthDateEdit = new QDateEdit(tab);
+    m_birthDateEdit->setCalendarPopup(true);
+    m_birthDateEdit->setDisplayFormat("yyyy-MM-dd");
+    m_birthDateEdit->setDate(QDate::currentDate().addYears(-20)); 
+    m_birthDateEdit->setMinimumWidth(400);
+    m_birthDateEdit->setMinimumHeight(35);
+    formLayout->addRow("出生年月:", m_birthDateEdit);
+    
+    m_addressEdit = new QLineEdit(tab);
+    m_addressEdit->setPlaceholderText("请输入联系地址");
+    m_addressEdit->setMinimumWidth(400);
+    m_addressEdit->setMinimumHeight(35);
+    formLayout->addRow("联系地址:", m_addressEdit);
+    
+    layout->addLayout(formLayout);
+    layout->addSpacing(20);
+
+    // 添加按钮
+    m_addUserBtn = new QPushButton("添加用户", tab);
+    m_addUserBtn->setMinimumHeight(40);
+    m_addUserBtn->setStyleSheet("QPushButton { font-size: 14px; background-color: #4CAF50; color: white; }");
+    connect(m_addUserBtn, &QPushButton::clicked, this, &AdminWidget::onAddUser);
+    layout->addWidget(m_addUserBtn);
+
+    // 状态标签
+    m_addUserStatusLabel = new QLabel("", tab);
+    m_addUserStatusLabel->setWordWrap(true);
+    layout->addWidget(m_addUserStatusLabel);
+    
+    layout->addStretch();
+
+    m_tabWidget->addTab(tab, "添加用户");
+}
+
+void AdminWidget::setupAllUsersTab()
+{
+    QWidget* tab = new QWidget();
+    QVBoxLayout* layout = new QVBoxLayout(tab);
+
+    // 标题和刷新按钮
+    QHBoxLayout* headerLayout = new QHBoxLayout();
+    QLabel* titleLabel = new QLabel("所有用户管理", tab);
+    titleLabel->setStyleSheet("font-size: 16px; font-weight: bold;");
+    headerLayout->addWidget(titleLabel);
+    headerLayout->addStretch();
+    m_refreshAllBtn = new QPushButton("刷新", tab);
+    connect(m_refreshAllBtn, &QPushButton::clicked, this, &AdminWidget::onRefreshAllUsers);
+    headerLayout->addWidget(m_refreshAllBtn);
+    layout->addLayout(headerLayout);
+
+    // 表格
+    m_allUsersTable = new QTableWidget(tab);
+    m_allUsersTable->setColumnCount(8);
+    m_allUsersTable->setHorizontalHeaderLabels({
+        "银行卡号", "用户姓名", "用户名", "余额", "管理员", "已审批", "注册时间", "选择"
+    });
+    m_allUsersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_allUsersTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_allUsersTable->horizontalHeader()->setStretchLastSection(true);
+    m_allUsersTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    layout->addWidget(m_allUsersTable);
+
+    // 操作按钮
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    m_resetPasswordBtn = new QPushButton("随机重置", tab);
+    m_modifyBalanceBtn = new QPushButton("修改余额", tab);
+    m_modifyPasswordBtn = new QPushButton("修改密码", tab);
+    m_modifyInfoBtn = new QPushButton("修改信息", tab);
+    m_resetPasswordBtn->setEnabled(false);
+    m_modifyBalanceBtn->setEnabled(false);
+    m_modifyPasswordBtn->setEnabled(false);
+    m_modifyInfoBtn->setEnabled(false);
+
+    connect(m_resetPasswordBtn, &QPushButton::clicked, this, &AdminWidget::onResetPassword);
+    connect(m_modifyBalanceBtn, &QPushButton::clicked, this, &AdminWidget::onModifyUserBalance);
+    connect(m_modifyPasswordBtn, &QPushButton::clicked, this, &AdminWidget::onModifyPassword);
+    connect(m_modifyInfoBtn, &QPushButton::clicked, this, &AdminWidget::onModifyUserInfo);
+
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(m_resetPasswordBtn);
+    buttonLayout->addWidget(m_modifyPasswordBtn);
+    buttonLayout->addWidget(m_modifyBalanceBtn);
+    buttonLayout->addWidget(m_modifyInfoBtn);
+    layout->addLayout(buttonLayout);
+
+    // 状态标签
+    m_allUsersStatusLabel = new QLabel("", tab);
+    m_allUsersStatusLabel->setWordWrap(true);
+    layout->addWidget(m_allUsersStatusLabel);
+
+    connect(m_allUsersTable, &QTableWidget::itemSelectionChanged, this, [this]() {
+        bool hasSelection = m_allUsersTable->selectedItems().size() > 0;
+        m_resetPasswordBtn->setEnabled(hasSelection);
+        m_modifyBalanceBtn->setEnabled(hasSelection);
+        m_modifyPasswordBtn->setEnabled(hasSelection);
+        m_modifyInfoBtn->setEnabled(hasSelection);
+    });
+
+    m_tabWidget->addTab(tab, "所有用户");
+}
+
+/**
+ * @brief 处理“添加用户”按钮点击事件。
+ *
+ * 从界面表单中获取用户输入的信息（姓名、身份证号、手机号、出生日期、联系地址），
+ * 检查所有字段是否填写完整。如果有字段为空，则在状态标签中显示错误信息并返回。
+ * 若输入完整，则将按钮设为不可用，状态标签显示“正在添加用户...”，
+ * 并构造请求数据，通过 m_client 发送添加用户的请求（请求类型 11）。
+ *
+ * 请求参数：
+ * - full_name: 用户真实姓名
+ * - id_card: 身份证号
+ * - phone: 手机号
+ * - birth_date: 出生日期（yyyy-MM-dd 格式）
+ * - address: 联系地址
+ */
+void AdminWidget::onAddUser()
+{
+    QString fullName = m_fullNameEdit->text().trimmed();
+    QString idCard = m_idCardEdit->text().trimmed();
+    QString phone = m_phoneEdit->text().trimmed();
+    QString birthDate = m_birthDateEdit->date().toString("yyyy-MM-dd");
+    QString address = m_addressEdit->text().trimmed();
+
+    if (fullName.isEmpty() || idCard.isEmpty() || phone.isEmpty() || 
+        address.isEmpty()) {
+        m_addUserStatusLabel->setText("错误: 所有字段都必须填写！");
+        m_addUserStatusLabel->setStyleSheet("QLabel { color: red; }");
+        return;
+    }
+
+    m_addUserStatusLabel->setText("正在添加用户...");
+    m_addUserStatusLabel->setStyleSheet("QLabel { color: blue; }");
+    m_addUserBtn->setEnabled(false);
+
+    QJsonObject req;
+    req["full_name"] = fullName;
+    req["id_card"] = idCard;
+    req["phone"] = phone;
+    req["birth_date"] = birthDate;
+    req["address"] = address;
+    m_client->sendRequest(11, m_token, req);  // Type 11: 添加用户
+}
+
+void AdminWidget::onResetPassword()
+{
+    int row = m_allUsersTable->currentRow();
+    if (row < 0) return;
+
+    QString userId = m_allUsersTable->item(row, 0)->data(Qt::UserRole).toString();
+    QString username = m_allUsersTable->item(row, 2)->text(); // 2 is username
+
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this,
+        "确认重置密码",
+        QString("确定要重置用户 '%1' 的密码吗？").arg(username),
+        QMessageBox::Yes | QMessageBox::No
+    );
+
+    if (reply == QMessageBox::Yes) {
+        m_allUsersStatusLabel->setText("正在重置密码...");
+
+        QJsonObject req;
+        req["user_id"] = userId;
+        m_client->sendRequest(12, m_token, req);  // Type 12: 重置密码
+    }
+}
+
+void AdminWidget::onRefreshAllUsers()
+{
+    m_allUsersStatusLabel->setText("正在加载...");
+    m_refreshAllBtn->setEnabled(false);
+
+    QJsonObject req;
+    m_client->sendRequest(8, m_token, req);  // Type 8: 获取所有用户
+}
+
+void AdminWidget::onModifyUserBalance()
+{
+    int row = m_allUsersTable->currentRow();
+    if (row < 0) return;
+
+    QString userId = m_allUsersTable->item(row, 0)->data(Qt::UserRole).toString();
+    QString username = m_allUsersTable->item(row, 2)->text(); // index 2
+    double currentBalance = m_allUsersTable->item(row, 3)->text().toDouble(); // index 3
+
+    showModifyBalanceDialog(userId, username, currentBalance);
+}
+
+void AdminWidget::showModifyBalanceDialog(const QString& userId, const QString& username, double currentBalance)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString("修改 %1 的余额").arg(username));
+    dialog.setMinimumWidth(300);
+
+    QFormLayout* layout = new QFormLayout(&dialog);
+
+    QLabel* infoLabel = new QLabel(QString("当前余额: %1").arg(currentBalance, 0, 'f', 2));
+    layout->addRow(infoLabel);
+
+    QLineEdit* balanceEdit = new QLineEdit(QString::number(currentBalance, 'f', 2));
+    layout->addRow("新余额:", balanceEdit);
+
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    QPushButton* okBtn = new QPushButton("确定");
+    QPushButton* cancelBtn = new QPushButton("取消");
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(okBtn);
+    buttonLayout->addWidget(cancelBtn);
+    layout->addRow(buttonLayout);
+
+    connect(okBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        double newBalance = balanceEdit->text().toDouble();
+
+        m_allUsersStatusLabel->setText("正在修改余额...");
+
+        QJsonObject req;
+        req["user_id"] = userId;
+        req["new_balance"] = newBalance;
+        m_client->sendRequest(9, m_token, req);  // Type 9: 修改用户余额
+    }
+}
+
+void AdminWidget::onModifyPassword()
+{
+    int row = m_allUsersTable->currentRow();
+    if (row < 0) return;
+
+    QString userId = m_allUsersTable->item(row, 0)->data(Qt::UserRole).toString();
+    QString username = m_allUsersTable->item(row, 2)->text(); // index 2
+
+    showModifyPasswordDialog(userId, username);
+}
+
+void AdminWidget::showModifyPasswordDialog(const QString& userId, const QString& username)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString("修改 %1 的密码").arg(username));
+    dialog.setMinimumWidth(300);
+
+    QFormLayout* layout = new QFormLayout(&dialog);
+
+    QLineEdit* passwordEdit = new QLineEdit(&dialog);
+    passwordEdit->setEchoMode(QLineEdit::Password);
+    passwordEdit->setPlaceholderText("请输入6位数字新密码");
+    layout->addRow("新密码:", passwordEdit);
+
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    QPushButton* okBtn = new QPushButton("确定");
+    QPushButton* cancelBtn = new QPushButton("取消");
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(okBtn);
+    buttonLayout->addWidget(cancelBtn);
+    layout->addRow(buttonLayout);
+
+    connect(okBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        QString newPassword = passwordEdit->text().trimmed();
+
+        if (newPassword.length() != 6) {
+            QMessageBox::warning(this, "输入错误", "密码必须为6位数字！");
+            return;
+        }
+
+        bool isDigitOnly = true;
+        for (const QChar &ch : newPassword) {
+            if (!ch.isDigit()) {
+                isDigitOnly = false;
+                break;
+            }
+        }
+        if (!isDigitOnly) {
+            QMessageBox::warning(this, "输入错误", "密码必须全部为数字！");
+            return;
+        }
+
+        m_allUsersStatusLabel->setText("正在修改密码...");
+
+        QJsonObject req;
+        req["user_id"] = userId;
+        req["new_password"] = newPassword;
+        m_client->sendRequest(12, m_token, req);  // Type 12: 重置/修改密码
+    }
+}
+
+void AdminWidget::onModifyUserInfo()
+{
+    int row = m_allUsersTable->currentRow();
+    if (row < 0) return;
+
+    QString userId = m_allUsersTable->item(row, 0)->data(Qt::UserRole).toString();
+    QString username = m_allUsersTable->item(row, 2)->text();
+    QString fullName = m_allUsersTable->item(row, 1)->text();
+    
+    QString phone = m_allUsersTable->item(row, 1)->data(Qt::UserRole).toString();
+    QString idCard = m_allUsersTable->item(row, 1)->data(Qt::UserRole + 1).toString();
+    QString birthDate = m_allUsersTable->item(row, 1)->data(Qt::UserRole + 2).toString();
+
+    showModifyInfoDialog(userId, username, fullName, phone, idCard, birthDate);
+}
+
+void AdminWidget::showModifyInfoDialog(const QString& userId, const QString& username, const QString& fullName, 
+                                     const QString& phone, const QString& idCard, const QString& birthDate)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString("修改用户 %1 (%2) 的信息").arg(fullName).arg(username));
+    dialog.setMinimumWidth(500);
+    dialog.setStyleSheet("QDialog { background-color: white; } "
+                         "QLineEdit, QDateEdit { padding: 8px; border: 1px solid #ccc; border-radius: 4px; min-width: 300px; }"
+                         "QLabel { font-weight: bold; color: #333; }");
+
+    QVBoxLayout* mainLayout = new QVBoxLayout(&dialog);
+    mainLayout->setContentsMargins(30, 30, 30, 30);
+    mainLayout->setSpacing(20);
+
+    QLabel* headerLabel = new QLabel("请更新用户信息：", &dialog);
+    headerLabel->setStyleSheet("font-size: 16px; color: #1976D2; margin-bottom: 10px;");
+    mainLayout->addWidget(headerLabel);
+
+    QFormLayout* formLayout = new QFormLayout();
+    formLayout->setSpacing(15);
+    formLayout->setLabelAlignment(Qt::AlignRight);
+
+    QLineEdit* fullNameEdit = new QLineEdit(fullName, &dialog);
+    fullNameEdit->setPlaceholderText("请输入真实姓名");
+    formLayout->addRow("真实姓名:", fullNameEdit);
+
+    QLineEdit* phoneEdit = new QLineEdit(phone, &dialog);
+    phoneEdit->setMaxLength(11);
+    phoneEdit->setPlaceholderText("请输入11位手机号");
+    formLayout->addRow("手机号:", phoneEdit);
+
+    QLineEdit* idCardEdit = new QLineEdit(idCard, &dialog);
+    idCardEdit->setMaxLength(18);
+    idCardEdit->setPlaceholderText("请输入18位身份证号");
+    formLayout->addRow("身份证号:", idCardEdit);
+
+    QDateEdit* birthDateEdit = new QDateEdit(&dialog);
+    birthDateEdit->setCalendarPopup(true);
+    birthDateEdit->setDisplayFormat("yyyy-MM-dd");
+    QDate bDate = QDate::fromString(birthDate, "yyyy-MM-dd");
+    if (bDate.isValid()) {
+        birthDateEdit->setDate(bDate);
+    } else {
+        birthDateEdit->setDate(QDate::currentDate().addYears(-20));
+    }
+    formLayout->addRow("出生日期:", birthDateEdit);
+
+    mainLayout->addLayout(formLayout);
+    mainLayout->addSpacing(10);
+
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    QPushButton* okBtn = new QPushButton("保存修改");
+    QPushButton* cancelBtn = new QPushButton("取消");
+    
+    okBtn->setMinimumSize(120, 40);
+    cancelBtn->setMinimumSize(100, 40);
+    
+    okBtn->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; border: none; font-weight: bold; }"
+                         "QPushButton:hover { background-color: #45a049; }");
+    cancelBtn->setStyleSheet("QPushButton { background-color: #f44336; color: white; border: none; font-weight: bold; }"
+                             "QPushButton:hover { background-color: #da190b; }");
+
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(okBtn);
+    buttonLayout->addWidget(cancelBtn);
+    mainLayout->addLayout(buttonLayout);
+
+    connect(okBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        m_allUsersStatusLabel->setText("正在同步更新用户信息...");
+
+        QJsonObject req;
+        req["user_id"] = userId;
+        req["full_name"] = fullNameEdit->text().trimmed();
+        req["phone"] = phoneEdit->text().trimmed();
+        req["id_card"] = idCardEdit->text().trimmed();
+        req["birth_date"] = birthDateEdit->date().toString("yyyy-MM-dd");
+        
+        m_client->sendRequest(14, m_token, req); 
+    }
+}
+
+void AdminWidget::onResponseReceived(const QJsonObject& response)
+{
+    QString status = response["status"].toString();
+    QString msg = response["msg"].toString();
+
+    if (status == "success") {
+        // Type 8: 获取所有用户
+        if (response.contains("users")) {
+            QJsonArray users = response["users"].toArray();
+            updateAllUsersTable(users);
+            m_allUsersStatusLabel->setText(QString("加载成功，共 %1 个用户").arg(users.size()));
+            m_refreshAllBtn->setEnabled(true);
+        }
+        // Type 11: 添加用户成功
+        else if (response.contains("card_number") && response.contains("password")) {
+            QString cardNumber = response["card_number"].toString();
+            QString password = response["password"].toString();
+            QString successMsg = QString("用户创建成功！\n卡号: %1\n初始密码: %2\n请妥善保管！").arg(cardNumber).arg(password);
+            m_addUserStatusLabel->setText(successMsg);
+            m_addUserStatusLabel->setStyleSheet("QLabel { color: green; }");
+            m_addUserBtn->setEnabled(true);
+            
+            // 清空表单
+            m_fullNameEdit->clear();
+            m_idCardEdit->clear();
+            m_phoneEdit->clear();
+            m_birthDateEdit->setDate(QDate::currentDate().addYears(-20));
+            m_addressEdit->clear();
+            
+            // 显示详细信息对话框
+            QMessageBox::information(this, "用户创建成功", successMsg);
+        }
+        // Type 12: 修改/重置密码成功
+        else if (response.contains("password") && (msg.contains("重置") || msg.contains("修改"))) {
+            QString newPassword = response["password"].toString();
+            QString successMsg = QString("密码操作成功！\n新密码: %1\n请妥善保管！").arg(newPassword);
+            m_allUsersStatusLabel->setText(msg);
+            QMessageBox::information(this, "操作成功", successMsg);
+            onRefreshAllUsers();  // 刷新列表
+        }
+        // Type 9: 修改余额成功
+        else if (msg.contains("余额")) {
+            m_allUsersStatusLabel->setText(msg);
+            onRefreshAllUsers();  // 刷新列表
+        }
+        // Type 14: 修改个人信息成功
+        else if (msg.contains("个人信息")) {
+            m_allUsersStatusLabel->setText(msg);
+            onRefreshAllUsers();  // 刷新列表
+        }
+        else {
+            m_addUserStatusLabel->setText(msg);
+            m_addUserBtn->setEnabled(true);
+            m_allUsersStatusLabel->setText(msg);
+            m_refreshAllBtn->setEnabled(true);
+        }
+    }
+    else {
+        // 错误处理
+        m_addUserStatusLabel->setText("错误: " + msg);
+        m_addUserStatusLabel->setStyleSheet("QLabel { color: red; }");
+        m_addUserBtn->setEnabled(true);
+        m_allUsersStatusLabel->setText("错误: " + msg);
+        m_refreshAllBtn->setEnabled(true);
+
+        QMessageBox::warning(this, "操作失败", msg);
+    }
+}
+
+void AdminWidget::updateAllUsersTable(const QJsonArray& users)
+{
+    m_allUsersTable->setRowCount(0);
+
+    for (const QJsonValue& value : users) {
+        QJsonObject user = value.toObject();
+        
+        // 跳过管理员账号，不显示在普通用户列表中
+        if (user["is_admin"].toBool()) {
+            continue;
+        }
+
+        int row = m_allUsersTable->rowCount();
+        m_allUsersTable->insertRow(row);
+
+        m_allUsersTable->setItem(row, 0, new QTableWidgetItem(user["card_number"].toString()));
+        // 保存内部 ID 到用户角色数据中
+        m_allUsersTable->item(row, 0)->setData(Qt::UserRole, user["id"].toString());
+        m_allUsersTable->setItem(row, 1, new QTableWidgetItem(user["full_name"].toString()));
+        // 存储额外信息用于修改对话框
+        m_allUsersTable->item(row, 1)->setData(Qt::UserRole, user["phone"].toString());
+        m_allUsersTable->item(row, 1)->setData(Qt::UserRole + 1, user["id_card"].toString());
+        m_allUsersTable->item(row, 1)->setData(Qt::UserRole + 2, user["birth_date"].toString());
+        
+        m_allUsersTable->setItem(row, 2, new QTableWidgetItem(user["username"].toString()));
+        m_allUsersTable->setItem(row, 3, new QTableWidgetItem(QString::number(user["balance"].toDouble(), 'f', 2)));
+        m_allUsersTable->setItem(row, 4, new QTableWidgetItem(user["is_admin"].toBool() ? "是" : "否"));
+        m_allUsersTable->setItem(row, 5, new QTableWidgetItem(user["is_approved"].toBool() ? "是" : "否"));
+        m_allUsersTable->setItem(row, 6, new QTableWidgetItem(user["created_at"].toString()));
+        m_allUsersTable->setItem(row, 7, new QTableWidgetItem("✓"));
+    }
+
+    m_allUsersTable->resizeColumnsToContents();
+}
+
+
+====================
+FILE: client\adminwidget.h
+====================
+
+#ifndef ADMINWIDGET_H
+#define ADMINWIDGET_H
+
+#include <QWidget>
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QPushButton>
+#include <QLineEdit>
+#include <QDateEdit>
+#include <QLabel>
+#include "tcpclient.h"
+
+/**
+ * @brief 管理员管理界面
+ *
+ * 功能：
+ * - Tab 1: 添加用户
+ * - Tab 2: 所有用户管理（含重置密码）
+ */
+class AdminWidget : public QWidget
+{
+    Q_OBJECT
+
+public:
+    explicit AdminWidget(TcpClient* client, QWidget* parent = nullptr);
+    ~AdminWidget() = default;
+
+signals:
+    void closeRequested();
+
+private slots:
+    void onResponseReceived(const QJsonObject& response);
+    void onRefreshAllUsers();
+    void onAddUser();
+    void onResetPassword();
+    void onModifyUserBalance();
+    void onModifyPassword();
+    void onModifyUserInfo();
+
+private:
+    void setupUI();
+    void setupAddUserTab();
+    void setupAllUsersTab();
+    void updateAllUsersTable(const QJsonArray& users);
+
+    TcpClient* m_client;
+    QString m_token;
+
+    // Tab widget
+    QTabWidget* m_tabWidget;
+
+    // Tab 1: 添加用户
+    QLineEdit* m_fullNameEdit;
+    QLineEdit* m_idCardEdit;
+    QLineEdit* m_phoneEdit;
+    QDateEdit* m_birthDateEdit;
+    QLineEdit* m_addressEdit;
+    QPushButton* m_addUserBtn;
+    QLabel* m_addUserStatusLabel;
+
+    // Tab 2: 所有用户
+    QTableWidget* m_allUsersTable;
+    QPushButton* m_refreshAllBtn;
+    QPushButton* m_resetPasswordBtn;
+    QPushButton* m_modifyBalanceBtn;
+    QPushButton* m_modifyPasswordBtn;
+    QPushButton* m_modifyInfoBtn;
+    QLabel* m_allUsersStatusLabel;
+
+    // 修改对话框
+    void showModifyBalanceDialog(const QString& userId, const QString& username, double currentBalance);
+    void showModifyPasswordDialog(const QString& userId, const QString& username);
+    void showModifyInfoDialog(const QString& userId, const QString& username, const QString& fullName, 
+                             const QString& phone, const QString& idCard, const QString& birthDate);
+};
+
+#endif // ADMINWIDGET_H
+
+
+====================
+FILE: client\loginwidget.cpp
+====================
+
+#include "loginwidget.h"
+#include "tcpclient.h"
+#include "protocolutils.h"
+
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFormLayout>
+#include <QMessageBox>
+#include <QTimer>
+#include <QIntValidator>
+#include <QRegularExpressionValidator>
+#include <QRegularExpression>
+
+LoginWidget::LoginWidget(TcpClient* client, QWidget* parent)
+    : QWidget(parent)
+    , m_client(client)
+    , m_isAdminMode(false)
+{
+    setupUI();
+
+    // 连接客户端响应信号
+    connect(m_client, &TcpClient::responseReceived,
+            this, &LoginWidget::onResponseReceived);
+
+    // 连接连接状态信号
+    connect(m_client, &TcpClient::connected,
+            this, &LoginWidget::onConnected);
+
+    connect(m_client, &TcpClient::disconnected, [this]() {
+        m_connectionStatusLabel->setText("状态: 未连接");
+        m_connectionStatusLabel->setStyleSheet("QLabel { color: red; }");
+        m_loginBtn->setEnabled(false);
+        m_switchModeBtn->setEnabled(true);
+        m_connectBtn->setEnabled(true);
+        m_connectBtn->setText("连接");
+    });
+
+    connect(m_client, &TcpClient::error, [this](const QString& msg) {
+        showMessage("连接错误: " + msg, false);
+        m_connectBtn->setEnabled(true);
+        m_connectBtn->setText("连接");
+    });
+}
+
+void LoginWidget::setupUI()
+{
+    // 创建窗口标题
+    setWindowTitle("银行系统 - 登录");
+    setMinimumSize(550, 450);
+
+    // 创建服务器设置控件
+    m_serverIpEdit = new QLineEdit(this);
+    m_serverIpEdit->setPlaceholderText("例如: 127.0.0.1 或 localhost");
+    m_serverIpEdit->setText("localhost");
+    m_serverIpEdit->setMaxLength(50);
+    m_serverIpEdit->setMinimumHeight(35);
+
+    m_serverPortEdit = new QLineEdit(this);
+    m_serverPortEdit->setPlaceholderText("例如: 9000");
+    m_serverPortEdit->setText("9000");
+    m_serverPortEdit->setValidator(new QIntValidator(1, 65535, this));
+    m_serverPortEdit->setMinimumHeight(35);
+
+    m_connectBtn = new QPushButton("连接", this);
+    m_connectBtn->setMinimumHeight(35);
+
+    m_connectionStatusLabel = new QLabel("状态: 未连接", this);
+    m_connectionStatusLabel->setStyleSheet("QLabel { color: red; }");
+
+    // 创建用户名密码控件
+    m_modeLabel = new QLabel("当前模式: 用户登录（16位卡号）", this);
+    m_modeLabel->setStyleSheet("QLabel { color: blue; font-weight: bold; }");
+    
+    m_usernameEdit = new QLineEdit(this);
+    m_usernameEdit->setPlaceholderText("请输入16位银行卡号");
+    m_usernameEdit->setMaxLength(16);
+    m_usernameEdit->setMinimumHeight(45);
+    m_usernameEdit->setMinimumWidth(300);
+    m_usernameEdit->setStyleSheet("QLineEdit { font-size: 16px; }");
+    // 用户模式只允许16位数字
+    m_usernameEdit->setValidator(new QRegularExpressionValidator(QRegularExpression("^[0-9]{16}$"), this));
+
+    m_passwordEdit = new QLineEdit(this);
+    m_passwordEdit->setPlaceholderText("请输入6位数字密码");
+    m_passwordEdit->setEchoMode(QLineEdit::Password);
+    m_passwordEdit->setMaxLength(50);
+    m_passwordEdit->setMinimumHeight(45);
+    m_passwordEdit->setMinimumWidth(300);
+    m_passwordEdit->setStyleSheet("QLineEdit { font-size: 16px; }");
+
+    m_loginBtn = new QPushButton("登录", this);
+    m_loginBtn->setMinimumHeight(40);
+    m_loginBtn->setEnabled(false);  // 初始禁用，连接后启用
+
+    m_switchModeBtn = new QPushButton("切换为管理员登录", this);
+    m_switchModeBtn->setMinimumHeight(40);
+    m_switchModeBtn->setStyleSheet("QPushButton { background-color: #1976D2; color: white; }");
+
+    m_messageLabel = new QLabel("", this);
+    m_messageLabel->setWordWrap(true);
+    m_messageLabel->setAlignment(Qt::AlignCenter);
+
+    // 创建布局
+    QFormLayout* serverLayout = new QFormLayout();
+    serverLayout->setFormAlignment(Qt::AlignCenter);
+    serverLayout->setLabelAlignment(Qt::AlignRight);
+    serverLayout->addRow("服务器地址:", m_serverIpEdit);
+    serverLayout->addRow("端口:", m_serverPortEdit);
+
+    QHBoxLayout* connectLayout = new QHBoxLayout();
+    connectLayout->addWidget(m_connectBtn);
+    connectLayout->addWidget(m_connectionStatusLabel);
+
+    QFormLayout* formLayout = new QFormLayout();
+    formLayout->setFormAlignment(Qt::AlignCenter);
+    formLayout->setLabelAlignment(Qt::AlignRight);
+    formLayout->setSpacing(15);
+    formLayout->addRow(m_modeLabel);
+    formLayout->addRow("用户名:", m_usernameEdit);
+    formLayout->addRow("密码:", m_passwordEdit);
+
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    buttonLayout->addWidget(m_loginBtn);
+    buttonLayout->addWidget(m_switchModeBtn);
+
+    QVBoxLayout* mainLayout = new QVBoxLayout(this);
+    mainLayout->addStretch();
+    mainLayout->addLayout(serverLayout);
+    mainLayout->addLayout(connectLayout);
+    mainLayout->addSpacing(20);
+    mainLayout->addLayout(formLayout);
+    mainLayout->addSpacing(20);
+    mainLayout->addLayout(buttonLayout);
+    mainLayout->addSpacing(20);
+    mainLayout->addWidget(m_messageLabel);
+    mainLayout->addStretch();
+
+    // 设置边距
+    mainLayout->setContentsMargins(40, 40, 40, 40);
+
+    // 连接按钮信号
+    connect(m_connectBtn, &QPushButton::clicked,
+            this, &LoginWidget::onConnectClicked);
+    connect(m_loginBtn, &QPushButton::clicked,
+            this, &LoginWidget::onLoginClicked);
+    connect(m_switchModeBtn, &QPushButton::clicked,
+            this, &LoginWidget::onSwitchModeClicked);
+
+    // 允许回车键登录
+    m_passwordEdit->setEnabled(true);
+    connect(m_passwordEdit, &QLineEdit::returnPressed,
+            this, &LoginWidget::onLoginClicked);
+}
+
+void LoginWidget::onLoginClicked()
+{
+    // 获取输入
+    QString username = m_usernameEdit->text().trimmed();
+    QString password = m_passwordEdit->text().trimmed();
+
+    // 验证输入
+    if (username.isEmpty() || password.isEmpty()) {
+        showMessage("用户名和密码不能为空！", false);
+        return;
+    }
+
+    // 检查连接状态
+    if (!m_client->isConnected()) {
+        showMessage("未连接到服务器，请稍后重试！", false);
+        return;
+    }
+
+    // 构造登录请求（type=2）
+    QJsonObject requestData;
+    requestData["username"] = username;
+    requestData["password"] = password;
+
+    // 发送登录请求（不需要 Token）
+    m_client->sendRequest(2, "", requestData);
+
+    // 显示处理中消息
+    showMessage("正在登录...", true);
+    m_loginBtn->setEnabled(false);
+    m_switchModeBtn->setEnabled(false);
+}
+
+void LoginWidget::onSwitchModeClicked()
+{
+    m_isAdminMode = !m_isAdminMode;
+    
+    if (m_isAdminMode) {
+        // 切换为管理员模式
+        m_modeLabel->setText("当前模式: 管理员登录");
+        m_modeLabel->setStyleSheet("QLabel { color: red; font-weight: bold; }");
+        m_usernameEdit->setPlaceholderText("请输入管理员用户名");
+        m_usernameEdit->setMaxLength(50);
+        m_usernameEdit->setValidator(new QRegularExpressionValidator(QRegularExpression("^[a-zA-Z0-9_]{3,20}$"), this));
+        m_switchModeBtn->setText("切换为用户登录");
+        m_switchModeBtn->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; }");
+    } else {
+        // 切换为用户模式
+        m_modeLabel->setText("当前模式: 用户登录（16位卡号）");
+        m_modeLabel->setStyleSheet("QLabel { color: blue; font-weight: bold; }");
+        m_usernameEdit->setPlaceholderText("请输入16位银行卡号");
+        m_usernameEdit->setMaxLength(16);
+        m_usernameEdit->setValidator(new QRegularExpressionValidator(QRegularExpression("^[0-9]{16}$"), this));
+        m_switchModeBtn->setText("切换为管理员登录");
+        m_switchModeBtn->setStyleSheet("QPushButton { background-color: #1976D2; color: white; }");
+    }
+    
+    m_usernameEdit->clear();
+    m_passwordEdit->clear();
+}
+
+void LoginWidget::onResponseReceived(const QJsonObject& response)
+{
+    // 恢复按钮状态
+    m_loginBtn->setEnabled(true);
+    m_switchModeBtn->setEnabled(true);
+
+    // 检查响应状态
+    QString status = response["status"].toString();
+    QString msg = response["msg"].toString();
+
+    if (status == "success") {
+        // 登录成功
+        if (response.contains("token")) {
+            QString token = response["token"].toString();
+            m_client->setToken(token);
+
+            // 提取用户信息
+            QJsonObject userInfo = response;
+            userInfo["username"] = m_usernameEdit->text().trimmed();
+            userInfo["is_admin"] = response.contains("is_admin") ? response["is_admin"].toBool() : false;
+
+            showMessage(msg + "！", true);
+
+            // 延迟发射信号（让用户看到成功消息）
+            QTimer::singleShot(500, this, [this, userInfo]() {
+                emit loginSuccess(userInfo);
+                // 登录成功后隐藏登录界面
+                hide();
+            });
+        }
+        else {
+            showMessage(msg + "！", true);
+        }
+    }
+    else {
+        showMessage(msg, false);
+    }
+}
+
+void LoginWidget::onConnectClicked()
+{
+    // 获取服务器地址和端口
+    QString host = m_serverIpEdit->text().trimmed();
+    QString portStr = m_serverPortEdit->text().trimmed();
+
+    // 验证输入
+    if (host.isEmpty() || portStr.isEmpty()) {
+        showMessage("请输入服务器地址和端口！", false);
+        return;
+    }
+
+    bool ok;
+    quint16 port = portStr.toUShort(&ok);
+    if (!ok || port == 0) {
+        showMessage("端口号无效（1-65535）！", false);
+        return;
+    }
+
+    // 如果已经连接，先断开
+    if (m_client->isConnected()) {
+        m_client->disconnect();
+    }
+
+    // 禁用连接按钮
+    m_connectBtn->setEnabled(false);
+    m_connectBtn->setText("连接中...");
+    showMessage("正在连接到服务器 " + host + ":" + QString::number(port) + "...", true);
+
+    // 连接到服务器
+    m_client->connectToHost(host, port);
+}
+
+void LoginWidget::onConnected()
+{
+    // 更新连接状态
+    m_connectionStatusLabel->setText("状态: 已连接");
+    m_connectionStatusLabel->setStyleSheet("QLabel { color: green; }");
+
+    // 启用登录和切换按钮
+    m_loginBtn->setEnabled(true);
+    m_switchModeBtn->setEnabled(true);
+
+    // 禁用连接按钮（保持已连接状态）
+    m_connectBtn->setText("已连接");
+    m_connectBtn->setEnabled(false);
+
+    m_serverIpEdit->setEnabled(false);
+    m_serverPortEdit->setEnabled(false);
+
+    showMessage("已连接到服务器", true);
+}
+
+void LoginWidget::showMessage(const QString& message, bool isSuccess)
+{
+    if (isSuccess) {
+        m_messageLabel->setStyleSheet("QLabel { color: green; font-weight: bold; }");
+    }
+    else {
+        m_messageLabel->setStyleSheet("QLabel { color: red; font-weight: bold; }");
+    }
+    m_messageLabel->setText(message);
+
+    // 3 秒后清除消息
+    if (!isSuccess || message.contains("正在")) {
+        QTimer::singleShot(3000, this, [this]() {
+            m_messageLabel->setText("");
+        });
+    }
+}
+
+
+====================
+FILE: client\loginwidget.h
+====================
+
+#ifndef LOGINWIDGET_H
+#define LOGINWIDGET_H
+
+#include <QWidget>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QLabel>
+#include <QJsonObject>
+
+class TcpClient;
+
+/**
+ * @brief 登录/注册界面
+ *
+ * 功能：
+ * - 用户登录
+ * - 用户注册
+ * - 登录成功后发出信号
+ */
+class LoginWidget : public QWidget
+{
+    Q_OBJECT
+
+public:
+    /**
+     * @brief 构造函数
+     * @param client TCP 客户端指针
+     * @param parent 父窗口
+     */
+    explicit LoginWidget(TcpClient* client, QWidget* parent = nullptr);
+
+    ~LoginWidget() = default;
+
+signals:
+    /**
+     * @brief 登录成功信号
+     * @param userInfo 用户信息（包含 user_id, username 等）
+     */
+    void loginSuccess(const QJsonObject& userInfo);
+
+private slots:
+    /**
+     * @brief 处理连接按钮点击
+     */
+    void onConnectClicked();
+
+    /**
+     * @brief 处理登录按钮点击
+     */
+    void onLoginClicked();
+
+    /**
+     * @brief 处理管理员/用户切换按钮点击
+     */
+    void onSwitchModeClicked();
+
+    /**
+     * @brief 处理服务器响应
+     * @param response JSON 响应数据
+     */
+    void onResponseReceived(const QJsonObject& response);
+
+    /**
+     * @brief 处理连接状态变化
+     */
+    void onConnected();
+
+private:
+    /**
+     * @brief 初始化 UI
+     */
+    void setupUI();
+
+    /**
+     * @brief 显示消息提示
+     * @param message 消息内容
+     * @param isSuccess 是否为成功消息
+     */
+    void showMessage(const QString& message, bool isSuccess = true);
+
+private:
+    TcpClient* m_client;           // TCP 客户端
+    QLineEdit* m_serverIpEdit;     // 服务器IP输入框
+    QLineEdit* m_serverPortEdit;   // 服务器端口输入框
+    QLineEdit* m_usernameEdit;     // 用户名输入框
+    QLineEdit* m_passwordEdit;     // 密码输入框
+    QPushButton* m_connectBtn;     // 连接按钮
+    QPushButton* m_loginBtn;       // 登录按钮
+    QPushButton* m_switchModeBtn;  // 切换管理员/用户模式按钮
+    QLabel* m_messageLabel;        // 消息提示标签
+    QLabel* m_connectionStatusLabel; // 连接状态标签
+    QLabel* m_modeLabel;           // 模式提示标签
+    bool m_isAdminMode;            // 是否为管理员模式
+};
+
+#endif // LOGINWIDGET_H
+
+
+====================
+FILE: client\main.cpp
+====================
+
+#include "mainwindow.h"
+#include "loginwidget.h"
+#include "tcpclient.h"
+
+#include <QApplication>
+#include <QMessageBox>
+#include <QEventLoop>
+#include <QTimer>
+
+int main(int argc, char *argv[])
+{
+    QApplication a(argc, argv);
+
+    TcpClient client;
+
+    LoginWidget login(&client);
+    login.show();
+
+    MainWindow mainWindow(&client);
+
+    // 连接登录成功信号
+    QObject::connect(&login, &LoginWidget::loginSuccess,
+                     &mainWindow, &MainWindow::onLoginSuccess);
+
+    return a.exec();
+}
+
+
+====================
+FILE: client\mainwindow.cpp
+====================
+
+#include "mainwindow.h"
+#include "tcpclient.h"
+#include "protocolutils.h"
+#include "transferwidget.h"
+#include "adminwidget.h"
+
+#include <QFormLayout>
+#include <QLineEdit>
+#include <QDialog>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QMessageBox>
+#include <QTimer>
+#include <QStatusBar>
+#include <QJsonArray>
+#include <QDateTime>
+
+MainWindow::MainWindow(TcpClient* client, QWidget* parent)
+    : QMainWindow(parent)
+    , m_client(client)
+{
+    setupUI();
+
+    connect(m_client, &TcpClient::responseReceived,
+            this, &MainWindow::onResponseReceived);
+
+    hide();
+}
+
+MainWindow::~MainWindow() {}
+
+void MainWindow::setupUI()
+{
+    // 创建窗口
+    setWindowTitle("银行系统");
+    resize(800, 600);
+
+
+    QWidget* centralWidget = new QWidget(this);
+    setCentralWidget(centralWidget);
+
+
+    m_stackedWidget = new QStackedWidget(this);
+
+    // 创建用户视图
+    m_userView = new QWidget(this);
+    setupUserView();
+    m_stackedWidget->addWidget(m_userView);
+
+
+    for (int i = 0; i < m_txnTable->columnCount(); ++i) {
+        m_txnTable->horizontalHeader()->setSectionResizeMode(i, QHeaderView::Stretch);
+    }
+
+    m_adminView = nullptr;
+
+
+    QVBoxLayout* mainLayout = new QVBoxLayout(centralWidget);
+    mainLayout->addWidget(m_stackedWidget);
+
+    m_statusLabel = new QLabel("就绪", this);
+    statusBar()->addWidget(m_statusLabel);
+}
+
+void MainWindow::setupUserView()
+{
+    // 创建控件
+    m_userInfoLabel = new QLabel("未登录", this);
+    m_userInfoLabel->setStyleSheet("QLabel { font-size: 16px; font-weight: bold; padding: 10px; }");
+
+    m_balanceLabel = new QLabel("余额: ¥0.00", this);
+    m_balanceLabel->setStyleSheet("QLabel { font-size: 20px; font-weight: bold; color: #2e7d32; padding: 10px; }");
+
+    m_transferBtn = new QPushButton("转账", this);
+    m_transferBtn->setMinimumSize(100, 40);
+    m_transferBtn->setStyleSheet("QPushButton { font-size: 14px; }");
+
+    m_adminBtn = new QPushButton("管理", this);
+    m_adminBtn->setMinimumSize(100, 40);
+    m_adminBtn->setStyleSheet("QPushButton { font-size: 14px; background-color: #1976D2; color: white; }");
+    m_adminBtn->hide();  // 默认隐藏，仅管理员可见
+
+    m_changePasswordBtn = new QPushButton("修改密码", this);
+    m_changePasswordBtn->setMinimumSize(100, 40);
+    m_changePasswordBtn->setStyleSheet("QPushButton { font-size: 14px; }");
+
+    m_refreshBtn = new QPushButton("刷新", this);
+    m_refreshBtn->setMinimumSize(100, 40);
+    m_refreshBtn->setStyleSheet("QPushButton { font-size: 14px; }");
+
+    // 交易记录表格
+    m_txnTable = new QTableWidget(this);
+    m_txnTable->setColumnCount(5);
+    m_txnTable->setHorizontalHeaderLabels({"交易流水号", "转出卡号", "转入卡号", "金额", "时间"});
+    m_txnTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_txnTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_txnTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_txnTable->horizontalHeader()->setStretchLastSection(true);
+    m_txnTable->verticalHeader()->setVisible(false);
+
+    // 设置列宽
+    m_txnTable->setColumnWidth(0, 80);   // 交易ID
+    m_txnTable->setColumnWidth(1, 100);  // 转出账户
+    m_txnTable->setColumnWidth(2, 100);  // 转入账户
+    m_txnTable->setColumnWidth(3, 100);  // 金额
+    m_txnTable->setColumnWidth(4, 180);  // 时间
+
+    // 创建布局
+    QVBoxLayout* mainLayout = new QVBoxLayout(m_userView);
+
+    QHBoxLayout* topLayout = new QHBoxLayout();
+    topLayout->addWidget(m_userInfoLabel);
+    topLayout->addStretch();
+    topLayout->addWidget(m_balanceLabel);
+    topLayout->addSpacing(20);
+    topLayout->addWidget(m_transferBtn);
+    topLayout->addWidget(m_adminBtn);
+    topLayout->addWidget(m_changePasswordBtn);
+    topLayout->addWidget(m_refreshBtn);
+
+    mainLayout->addLayout(topLayout);
+    mainLayout->addSpacing(20);
+    mainLayout->addWidget(new QLabel("交易记录:", this));
+    mainLayout->addWidget(m_txnTable);
+
+    // 连接按钮信号
+    connect(m_transferBtn, &QPushButton::clicked,
+            this, &MainWindow::onTransferClicked);
+    connect(m_adminBtn, &QPushButton::clicked,
+            this, &MainWindow::onAdminClicked);
+    connect(m_changePasswordBtn, &QPushButton::clicked,
+            this, &MainWindow::onChangePasswordClicked);
+    connect(m_refreshBtn, &QPushButton::clicked,
+            this, &MainWindow::onRefreshClicked);
+}
+
+void MainWindow::onLoginSuccess(const QJsonObject& userInfo)
+{
+    // 保存用户信息
+    m_userIdStr = userInfo["user_id"].toString();
+    m_username = userInfo["username"].toString();
+    m_fullName = userInfo["full_name"].toString();
+    m_cardNumber = userInfo["card_number"].toString();
+    m_phone = userInfo["phone"].toString();
+    m_idCard = userInfo["id_card"].toString();
+    m_birthDate = userInfo["birth_date"].toString();
+    m_isAdmin = userInfo.contains("is_admin") ? userInfo["is_admin"].toBool() : false;
+    m_token = m_client->token();
+
+    // 更新 UI
+    if (m_isAdmin) {
+        QString userLabel = QString("卡号: %1 | 姓名: %2 [管理员]").arg(m_userIdStr).arg(m_fullName);
+        m_userInfoLabel->setText(userLabel);
+        m_balanceLabel->hide();
+        
+        m_adminBtn->show();  // 显示管理员按钮
+        m_transferBtn->hide();  // 管理员不能转账
+        m_changePasswordBtn->hide(); // 管理员不能修改密码
+
+        // 为管理员创建管理员视图（延迟创建，仅当需要时）
+        if (!m_adminView) {
+            m_adminView = new AdminWidget(m_client, this);
+            m_stackedWidget->addWidget(m_adminView);
+
+            // 连接返回信号
+            connect(m_adminView, &AdminWidget::closeRequested,
+                    this, &MainWindow::onBackClicked);
+        }
+    } else {
+        QString userLabel = QString("卡号: %1 | 姓名: %2").arg(m_userIdStr).arg(m_fullName);
+        m_userInfoLabel->setText(userLabel);
+        m_balanceLabel->show();
+        
+        m_adminBtn->hide();
+        m_transferBtn->show();  // 普通用户显示转账按钮
+        m_changePasswordBtn->show(); // 普通用户显示修改密码按钮
+    }
+
+    // 显示主窗口
+    show();
+
+    // 自动查询余额和交易记录
+    QTimer::singleShot(100, this, [this]() {
+        requestBalance();
+        requestTransactions();
+    });
+
+    // 设置定时器，每5秒自动刷新交易记录（用于检测新转入的交易）
+    m_refreshTimer = new QTimer(this);
+    connect(m_refreshTimer, &QTimer::timeout, this, [this]() {
+        if (m_client->isConnected()) {
+            requestBalance();
+            requestTransactions();
+        }
+    });
+    m_refreshTimer->start(5000);  // 5秒刷新一次
+
+    showStatusMessage("登录成功");
+}
+
+void MainWindow::requestBalance()
+{
+    if (!m_client->isConnected()) {
+        showStatusMessage("未连接到服务器");
+        return;
+    }
+
+    // 发送查询余额请求（type=3）
+    QJsonObject requestData;
+    m_client->sendRequest(3, m_token, requestData);
+
+    // showStatusMessage("正在查询余额...");
+}
+
+void MainWindow::requestTransactions()
+{
+    if (!m_client->isConnected()) {
+        showStatusMessage("未连接到服务器");
+        return;
+    }
+
+    QJsonObject requestData;
+    requestData["limit"] = 20; 
+    m_client->sendRequest(5, m_token, requestData);
+
+    // showStatusMessage("正在查询交易记录...");
+}
+
+void MainWindow::onTransferClicked()
+{
+    // 打开转账对话框
+    TransferWidget transferDlg(m_client, m_token, this);
+    transferDlg.exec();
+
+    // 转账完成后刷新余额和交易记录
+    if (transferDlg.result() == QDialog::Accepted) {
+        requestBalance();
+        requestTransactions();
+    }
+}
+
+void MainWindow::onAdminClicked()
+{
+    // 切换到管理员视图
+    if (m_adminView) {
+        m_stackedWidget->setCurrentWidget(m_adminView);
+        showStatusMessage("切换到管理员视图");
+    }
+}
+
+void MainWindow::onChangePasswordClicked()
+{
+    // 创建修改密码对话框
+    QDialog dialog(this);
+    dialog.setWindowTitle("修改密码");
+    dialog.setMinimumWidth(400);
+
+    QFormLayout* layout = new QFormLayout(&dialog);
+
+    QLineEdit* oldPasswordEdit = new QLineEdit(&dialog);
+    oldPasswordEdit->setEchoMode(QLineEdit::Password);
+    oldPasswordEdit->setPlaceholderText("请输入旧密码");
+    layout->addRow("旧密码:", oldPasswordEdit);
+
+    QLineEdit* newPasswordEdit = new QLineEdit(&dialog);
+    newPasswordEdit->setEchoMode(QLineEdit::Password);
+    newPasswordEdit->setPlaceholderText("请输入6位数字密码");
+    layout->addRow("新密码:", newPasswordEdit);
+
+    QLineEdit* confirmPasswordEdit = new QLineEdit(&dialog);
+    confirmPasswordEdit->setEchoMode(QLineEdit::Password);
+    confirmPasswordEdit->setPlaceholderText("请再次输入6位数字密码");
+    layout->addRow("确认密码:", confirmPasswordEdit);
+
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    QPushButton* okBtn = new QPushButton("确定", &dialog);
+    QPushButton* cancelBtn = new QPushButton("取消", &dialog);
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(okBtn);
+    buttonLayout->addWidget(cancelBtn);
+    layout->addRow(buttonLayout);
+
+    connect(okBtn, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        QString oldPassword = oldPasswordEdit->text().trimmed();
+        QString newPassword = newPasswordEdit->text().trimmed();
+        QString confirmPassword = confirmPasswordEdit->text().trimmed();
+
+        // 验证输入
+        if (oldPassword.isEmpty() || newPassword.isEmpty() || confirmPassword.isEmpty()) {
+            QMessageBox::warning(this, "输入错误", "所有字段都必须填写！");
+            return;
+        }
+
+        if (newPassword.length() != 6) {
+            QMessageBox::warning(this, "输入错误", "新密码必须为6位数字！");
+            return;
+        }
+
+        bool isDigitOnly = true;
+        for (const QChar &ch : newPassword) {
+            if (!ch.isDigit()) {
+                isDigitOnly = false;
+                break;
+            }
+        }
+        if (!isDigitOnly) {
+            QMessageBox::warning(this, "输入错误", "新密码必须全部为数字！");
+            return;
+        }
+
+        if (newPassword != confirmPassword) {
+            QMessageBox::warning(this, "输入错误", "两次输入的新密码不一致！");
+            return;
+        }
+
+        // 发送修改密码请求
+        showStatusMessage("正在修改密码...");
+        QJsonObject req;
+        req["user_id"] = m_userIdStr;
+        req["old_password"] = oldPassword;
+        req["new_password"] = newPassword;
+        m_client->sendRequest(13, m_token, req);  // Type 13: 修改密码
+    }
+}
+
+void MainWindow::onBackClicked()
+{
+    // 返回用户视图
+    m_stackedWidget->setCurrentWidget(m_userView);
+    showStatusMessage("返回用户视图");
+
+    // 刷新用户数据
+    requestBalance();
+    requestTransactions();
+}
+
+void MainWindow::onRefreshClicked()
+{
+    requestBalance();
+    requestTransactions();
+}
+
+void MainWindow::onResponseReceived(const QJsonObject& response)
+{
+    QString msg = response["msg"].toString();
+    QString status = response["status"].toString();
+
+    // 处理查询余额响应
+    if (response.contains("balance")) {
+        double balance = response["balance"].toDouble();
+        m_balanceLabel->setText(QString("余额: ¥%1").arg(balance, 0, 'f', 2));
+    }
+
+    // 处理查询交易历史响应
+    if (response.contains("transactions")) {
+        QJsonArray transactions = response["transactions"].toArray();
+        int prevCount = m_txnTable->rowCount();
+        updateTransactionTable(transactions);
+        int newCount = transactions.size();
+
+        // 只有在记录数变化或手动刷新时才显示消息
+        if (newCount != prevCount) {
+            showStatusMessage(QString("已加载 %1 条交易记录").arg(newCount));
+        }
+    }
+
+    // 处理转账响应
+    if (response.contains("new_balance")) {
+        double newBalance = response["new_balance"].toDouble();
+        m_balanceLabel->setText(QString("余额: ¥%1").arg(newBalance, 0, 'f', 2));
+        showStatusMessage("余额已更新");
+    }
+    
+    // 处理修改密码响应
+    if (status == "success" && msg.contains("密码修改成功")) {
+        showStatusMessage(msg);
+        QMessageBox::information(this, "成功", "密码修改成功！请使用新密码重新登录。");
+    } else if (status == "error" && msg.contains("密码")) {
+        showStatusMessage("错误: " + msg);
+        QMessageBox::warning(this, "操作失败", msg);
+    }
+}
+
+void MainWindow::updateTransactionTable(const QJsonArray& transactions)
+{
+    // 清空表格
+    m_txnTable->setRowCount(0);
+
+    // 填充数据
+    for (int i = 0; i < transactions.size(); ++i) {
+        QJsonObject txn = transactions[i].toObject();
+
+        int row = m_txnTable->rowCount();
+        m_txnTable->insertRow(row);
+
+        // 交易ID
+        m_txnTable->setItem(row, 0, new QTableWidgetItem(QString::number(txn["trans_id"].toVariant().toLongLong())));
+
+        QString fromCard = txn["from_card_number"].toString();
+        m_txnTable->setItem(row, 1, new QTableWidgetItem(fromCard.isEmpty() ? "系统" : fromCard));
+
+        QString toCard = txn["to_card_number"].toString();
+        m_txnTable->setItem(row, 2, new QTableWidgetItem(toCard.isEmpty() ? "系统" : toCard));
+
+        double amount = txn["amount"].toDouble();
+        QTableWidgetItem* amountItem = new QTableWidgetItem(QString("¥%1").arg(amount, 0, 'f', 2));
+        amountItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_txnTable->setItem(row, 3, amountItem);
+
+        // 时间列 - 转换为本地时区
+        QString timestampStr = txn["timestamp"].toString();
+        QDateTime timestampUtc = QDateTime::fromString(timestampStr, Qt::ISODate);
+        QDateTime timestampLocal = timestampUtc.toLocalTime();
+        QString localTimestamp = timestampLocal.toString("yyyy-MM-dd hh:mm:ss");
+        m_txnTable->setItem(row, 4, new QTableWidgetItem(localTimestamp));
+    }
+}
+
+void MainWindow::showStatusMessage(const QString& message)
+{
+    // 如果当前就是要显示的消息，不重复更新
+    if (m_statusLabel->text() == message) {
+        return;
+    }
+
+    m_statusLabel->setText(message);
+
+    // 3 秒后清除消息
+    QTimer::singleShot(3000, this, [this]() {
+        m_statusLabel->setText("就绪");
+    });
+}
+
+
+====================
+FILE: client\mainwindow.h
+====================
+
+#ifndef MAINWINDOW_H
+#define MAINWINDOW_H
+
+#include <QMainWindow>
+#include <QLabel>
+#include <QTableWidget>
+#include <QPushButton>
+#include <QStackedWidget>
+#include <QWidget>
+#include <QJsonObject>
+
+class TcpClient;
+class AdminWidget;
+
+/**
+ * @brief 主窗口 - 银行系统主界面
+ *
+ * 功能：
+ * - 显示用户信息和余额
+ * - 显示交易记录
+ * - 打开转账对话框
+ * - 自动查询余额和交易历史
+ * - 管理员界面切换
+ */
+class MainWindow : public QMainWindow
+{
+    Q_OBJECT
+
+public:
+    /**
+     * @brief 构造函数
+     * @param client TCP 客户端指针
+     * @param parent 父窗口
+     */
+    explicit MainWindow(TcpClient* client, QWidget* parent = nullptr);
+
+    ~MainWindow();
+
+public slots:
+    /**
+     * @brief 登录成功后调用（初始化用户信息）
+     * @param userInfo 用户信息（包含 user_id, username 等）
+     */
+    void onLoginSuccess(const QJsonObject& userInfo);
+
+private slots:
+    /**
+     * @brief 请求查询余额
+     */
+    void requestBalance();
+
+    /**
+     * @brief 请求查询交易历史
+     */
+    void requestTransactions();
+
+    /**
+     * @brief 处理转账按钮点击
+     */
+    void onTransferClicked();
+
+    /**
+     * @brief 处理管理员按钮点击
+     */
+    void onAdminClicked();
+
+    /**
+     * @brief 处理返回按钮点击（从管理员界面返回用户界面）
+     */
+    void onBackClicked();
+
+    /**
+     * @brief 处理刷新按钮点击
+     */
+    void onRefreshClicked();
+    
+    /**
+     * @brief 处理修改密码按钮点击
+     */
+    void onChangePasswordClicked();
+
+    /**
+     * @brief 处理服务器响应
+     * @param response JSON 响应数据
+     */
+    void onResponseReceived(const QJsonObject& response);
+
+private:
+    /**
+     * @brief 初始化 UI
+     */
+    void setupUI();
+
+    /**
+     * @brief 创建用户界面
+     */
+    void setupUserView();
+
+    /**
+     * @brief 更新交易记录表格
+     * @param transactions 交易记录数组
+     */
+    void updateTransactionTable(const QJsonArray& transactions);
+
+    /**
+     * @brief 显示状态消息
+     * @param message 消息内容
+     */
+    void showStatusMessage(const QString& message);
+
+private:
+    TcpClient* m_client;           // TCP 客户端
+    QString m_token;               // 认证 Token
+    QString m_userIdStr;           // 用户 ID (字符串格式的雪花ID)
+    QString m_cardNumber;          // 16位银行卡号
+    QString m_username;            // 用户名
+    QString m_fullName;            // 用户姓名
+    QString m_phone;               // 手机号
+    QString m_idCard;              // 身份证号
+    QString m_birthDate;           // 出生日期
+    bool m_isAdmin;                // 是否是管理员
+
+    // 视图切换
+    QStackedWidget* m_stackedWidget;   // 堆栈窗口，用于切换视图
+    QWidget* m_userView;               // 用户视图
+    AdminWidget* m_adminView;          // 管理员视图
+
+    // 用户视图控件
+    QLabel* m_userInfoLabel;       // 用户信息标签
+    QLabel* m_balanceLabel;        // 余额标签
+    QTableWidget* m_txnTable;      // 交易记录表格
+    QPushButton* m_transferBtn;    // 转账按钮
+    QPushButton* m_adminBtn;       // 管理员按钮
+    QPushButton* m_changePasswordBtn; // 修改密码按钮
+    QPushButton* m_refreshBtn;     // 刷新按钮
+    QPushButton* m_backBtn;        // 返回按钮（管理员界面用）
+
+    QLabel* m_statusLabel;         // 状态栏标签
+    QTimer* m_refreshTimer;        // 自动刷新定时器
+};
+
+#endif // MAINWINDOW_H
+
+
+====================
+FILE: client\protocolutils.cpp
+====================
+
+#include "protocolutils.h"
+
+#include <QCryptographicHash>
+#include <QDataStream>
+#include <QIODevice>
+#include <QJsonDocument>
+#include <QDateTime>
+#include <QtEndian>
+
+
+
+QByteArray ProtocolUtils::packMessage(quint8 type, const QString& token, const QJsonObject& data)
+{
+    // 1. 序列化 JSON 数据
+    QByteArray jsonData = QJsonDocument(data).toJson(QJsonDocument::Compact);
+
+    // 2. 准备 Token 字段（128 字节定长，不足补 \0）
+    QByteArray tokenBytes = token.toUtf8();
+    if (tokenBytes.size() > 128) {
+        tokenBytes = tokenBytes.left(128);  // 截断
+    }
+    while (tokenBytes.size() < 128) {
+        tokenBytes.append('\0');  // 填充
+    }
+
+    // 3. 计算消息总长度（不包含长度字段自身的 4 字节）
+    quint32 totalLen = 1 + 128 + jsonData.size(); 
+
+    // 4. 构造数据包
+    QByteArray packet;
+    packet.reserve(4 + totalLen);  // 预分配空间
+
+    // 写入长度
+    quint32 bigEndianLen = qToBigEndian(totalLen);
+    packet.append(reinterpret_cast<const char*>(&bigEndianLen), 4);
+
+    // 写入消息类型
+    packet.append(static_cast<char>(type));
+
+    // 写入 Token（128 字节）
+    packet.append(tokenBytes);
+
+    // 写入 JSON 数据
+    packet.append(jsonData);
+
+    return packet;
+}
+
+bool ProtocolUtils::parseMessage(QByteArray& buffer, quint8& type, QString& token, QJsonObject& data)
+{
+    // 1. 检查是否有足够的数据读取长度字段
+    if (buffer.size() < 4) {
+        return false;  
+    }
+
+    // 2. 读取消息总长度
+    quint32 totalLen;
+    memcpy(&totalLen, buffer.constData(), 4);
+    totalLen = qFromBigEndian(totalLen);
+
+    // 3. 检查缓冲区是否有完整消息
+    if (buffer.size() < 4 + static_cast<int>(totalLen)) {
+        return false;  // 数据不完整
+    }
+
+    // 4. 直接从 buffer 读取数据
+    int offset = 4;  // 跳过长度字段
+
+    // 读取消息类型（1 字节）
+    type = static_cast<quint8>(buffer[offset]);
+    offset += 1;
+
+    // 读取 Token（128 字节）
+    QByteArray tokenBytes = QByteArray::fromRawData(buffer.constData() + offset, 128);
+    token = QString::fromUtf8(tokenBytes).trimmed();  // 移除填充的 \0
+    offset += 128;
+
+    // 读取 JSON 数据
+    int jsonSize = static_cast<int>(totalLen) - 1 - 128;  // 总长 - type(1) - token(128)
+    QByteArray jsonData = QByteArray::fromRawData(buffer.constData() + offset, jsonSize);
+    data = QJsonDocument::fromJson(jsonData).object();
+
+    // 5. 从缓冲区移除已处理的数据
+    buffer.remove(0, 4 + static_cast<int>(totalLen));
+
+    return true;
+}
+
+
+
+
+====================
+FILE: client\protocolutils.h
+====================
+
+#ifndef PROTOCOLUTILS_H
+#define PROTOCOLUTILS_H
+
+#include <QByteArray>
+#include <QJsonObject>
+#include <QString>
+
+/**
+ * @brief 协议工具类 - 处理 TCP 消息的打包和解包
+ *
+ * 消息帧格式:
+ * [4 bytes: Length] [1 byte: Type] [128 bytes: Token] [Variable: JSON]
+ * - Length: 大端序 uint32，不包含自身 4 字节
+ * - Type: uint8，0=响应, 1=注册, 2=登录, 3=查余额, 4=转账, 5=查流水
+ * - Token: 128 字节定长，不足补 \0
+ * - JSON: UTF-8 编码的 JSON 数据
+ */
+class ProtocolUtils
+{
+public:
+    /**
+     * @brief 打包消息
+     * @param type 消息类型 (1-5)
+     * @param token 认证 Token（可为空）
+     * @param data JSON 数据体
+     * @return 打包后的完整消息帧
+     */
+    static QByteArray packMessage(quint8 type, const QString& token, const QJsonObject& data);
+
+    /**
+     * @brief 解包消息（处理粘包/半包）
+     * @param buffer 接收缓冲区 [in/out]，成功后会移除已处理的数据
+     * @param type [out] 消息类型
+     * @param token [out] Token（128 字节）
+     * @param data [out] JSON 数据
+     * @return true 表示提取到完整消息，false 表示数据不完整
+     */
+    static bool parseMessage(QByteArray& buffer, quint8& type, QString& token, QJsonObject& data);
+
+    /**
+     * @brief 生成认证 Token
+     * 格式: base64(userId:timestamp:role:HMAC-SHA256(payload+SECRET_KEY))
+     * @param userId 用户 ID
+     * @param isAdmin 是否是管理员
+     * @return 128 字节定长 Token
+     */
+    static QString generateToken(const QString& userId, bool isAdmin = false);
+
+    /**
+     * @brief 验证 Token
+     * @param token Token 字符串
+     * @param userId [out] 用户 ID
+     * @param isAdmin [out] 是否是管理员（可选）
+     * @return true 表示 Token 有效
+     */
+    static bool verifyToken(const QString& token, QString& userId, bool* isAdmin = nullptr);
+
+private:
+    // HMAC 签名密钥
+    static const QByteArray SECRET_KEY;
+
+    // Token 有效期（秒），默认 24 小时
+    static const qint64 TOKEN_VALIDITY_PERIOD = 86400;
+
+    /**
+     * @brief 计算 HMAC-SHA256 签名（只取前 16 字节以节省空间）
+     * @param data 待签名数据
+     * @param key 密钥
+     * @return 十六进制签名字符串（32 个字符）
+     */
+    static QString hmacSha256(const QByteArray& data, const QByteArray& key);
+};
+
+#endif // PROTOCOLUTILS_H
+
+
+====================
+FILE: client\tcpclient.cpp
+====================
+
+#include "tcpclient.h"
+#include "protocolutils.h"
+
+#include <QTcpSocket>
+#include <QDebug>
+
+TcpClient::TcpClient(QObject* parent)
+    : QObject(parent)
+    , m_socket(new QTcpSocket(this))
+{
+    // 连接 socket 的信号到槽
+    connect(m_socket, &QTcpSocket::readyRead, this, &TcpClient::onReadyRead);
+    connect(m_socket, &QTcpSocket::errorOccurred, this, &TcpClient::onSocketError);
+    connect(m_socket, &QTcpSocket::connected, this, &TcpClient::connected);
+    connect(m_socket, &QTcpSocket::disconnected, this, &TcpClient::disconnected);
+    connect(m_socket, &QTcpSocket::stateChanged, this, &TcpClient::onStateChanged);
+}
+
+TcpClient::~TcpClient()
+{
+    // 断开所有信号连接，防止在析构过程中触发槽
+    if (m_socket) {
+        m_socket->blockSignals(true);
+
+        // 如果仍然连接，直接关闭（不等待，避免在析构函数中进入事件循环）
+        if (m_socket->state() == QTcpSocket::ConnectedState) {
+            m_socket->disconnectFromHost();
+            // 立即中止连接，不等待
+            m_socket->abort();
+        }
+    }
+    // 注意：m_socket 会被 Qt 父子对象机制自动删除，不需要手动 delete
+}
+
+bool TcpClient::connectToHost(const QString& host, quint16 port)
+{
+    // 检查 socket 状态
+    if (m_socket->state() == QTcpSocket::ConnectedState) {
+        qWarning() << "Already connected to server";
+        emit error("Already connected to server");
+        return false;
+    }
+
+    // 清空缓冲区
+    m_buffer.clear();
+
+    // 连接到服务器
+    m_socket->connectToHost(host, port);
+    qDebug() << "Connecting to" << host << ":" << port;
+
+    // 注意：connectToHost 是异步的，实际连接结果通过 connected() 信号通知
+    return true;
+}
+
+void TcpClient::disconnect()
+{
+    if (m_socket && m_socket->state() == QTcpSocket::ConnectedState) {
+        m_socket->disconnectFromHost();
+    }
+}
+
+void TcpClient::sendRequest(quint8 type, const QString& token, const QJsonObject& data)
+{
+    // 检查连接状态
+    if (!isConnected()) {
+        qWarning() << "Cannot send request: not connected";
+        emit error("Not connected to server");
+        return;
+    }
+
+    // 使用 ProtocolUtils 打包消息
+    QByteArray packet = ProtocolUtils::packMessage(type, token, data);
+
+    // 发送数据
+    qint64 bytesWritten = m_socket->write(packet);
+    if (bytesWritten == -1) {
+        qWarning() << "Failed to send data:" << m_socket->errorString();
+        emit error(QString("Failed to send data: %1").arg(m_socket->errorString()));
+        return;
+    }
+
+    // 刷新缓冲区（确保数据立即发送）
+    m_socket->flush();
+
+    qDebug() << "Sent request:" << "type=" << type << "bytes=" << bytesWritten;
+}
+
+void TcpClient::onReadyRead()
+{
+    // 读取所有可用数据并追加到缓冲区
+    QByteArray newData = m_socket->readAll();
+    m_buffer.append(newData);
+
+    qDebug() << "Received" << newData.size() << "bytes, buffer size:" << m_buffer.size();
+
+    // 循环解析缓冲区中的消息（处理粘包/半包）
+    quint8 type;
+    QString token;
+    QJsonObject response;
+
+    while (ProtocolUtils::parseMessage(m_buffer, type, token, response)) {
+        qDebug() << "Parsed message: type=" << type;
+
+        // type=0 表示响应消息
+        if (type == 0) {
+            emit responseReceived(response);
+        } else {
+            qWarning() << "Received non-response message type:" << type;
+        }
+    }
+
+    // 如果缓冲区还有剩余数据，说明是半包（数据不完整），等待下次接收
+    if (!m_buffer.isEmpty()) {
+        qDebug() << "Buffer has" << m_buffer.size() << "bytes remaining (incomplete packet)";
+    }
+}
+
+void TcpClient::onSocketError(QAbstractSocket::SocketError socketError)
+{
+    Q_UNUSED(socketError);
+    QString errorMsg = QString("Socket error: %1").arg(m_socket->errorString());
+    qWarning() << errorMsg;
+    emit error(errorMsg);
+}
+
+void TcpClient::onStateChanged(QAbstractSocket::SocketState state)
+{
+    QString stateStr;
+    switch (state) {
+    case QAbstractSocket::UnconnectedState:
+        stateStr = "Unconnected";
+        break;
+    case QAbstractSocket::HostLookupState:
+        stateStr = "HostLookup";
+        break;
+    case QAbstractSocket::ConnectingState:
+        stateStr = "Connecting";
+        break;
+    case QAbstractSocket::ConnectedState:
+        stateStr = "Connected";
+        break;
+    case QAbstractSocket::BoundState:
+        stateStr = "Bound";
+        break;
+    case QAbstractSocket::ClosingState:
+        stateStr = "Closing";
+        break;
+    case QAbstractSocket::ListeningState:
+        stateStr = "Listening";
+        break;
+    }
+
+    qDebug() << "Socket state changed:" << stateStr;
+}
+
+
+====================
+FILE: client\tcpclient.h
+====================
+
+#ifndef TCPCLIENT_H
+#define TCPCLIENT_H
+
+#include <QObject>
+#include <QTcpSocket>
+#include <QJsonObject>
+#include <QString>
+
+/**
+ * @brief TCP 客户端类 - 封装网络通信细节
+ *
+ * 功能：
+ * - 连接到服务器
+ * - 发送请求（非阻塞）
+ * - 接收响应（通过信号）
+ * - 自动处理粘包/半包问题
+ * - Token 管理
+ */
+class TcpClient : public QObject
+{
+    Q_OBJECT
+
+public:
+    /**
+     * @brief 构造函数
+     * @param parent 父对象
+     */
+    explicit TcpClient(QObject* parent = nullptr);
+
+    /**
+     * @brief 析构函数
+     */
+    ~TcpClient();
+
+    /**
+     * @brief 连接到服务器
+     * @param host 服务器地址（IP 或域名）
+     * @param port 服务器端口
+     * @return true 表示连接请求已发出（实际连接状态通过 connected 信号通知）
+     */
+    bool connectToHost(const QString& host, quint16 port);
+
+    /**
+     * @brief 断开连接
+     */
+    void disconnect();
+
+    /**
+     * @brief 发送请求（非阻塞）
+     * @param type 消息类型 (1-5)
+     * @param token 认证 Token（登录成功后必须提供）
+     * @param data JSON 数据体
+     */
+    void sendRequest(quint8 type, const QString& token, const QJsonObject& data);
+
+    /**
+     * @brief 设置 Token（登录成功后调用）
+     * @param token Token 字符串
+     */
+    void setToken(const QString& token) { m_token = token; }
+
+    /**
+     * @brief 获取当前 Token
+     * @return Token 字符串
+     */
+    QString token() const { return m_token; }
+
+    /**
+     * @brief 检查是否已连接
+     * @return true 表示已连接
+     */
+    bool isConnected() const { return m_socket && m_socket->state() == QTcpSocket::ConnectedState; }
+
+signals:
+    /**
+     * @brief 连接成功信号
+     */
+    void connected();
+
+    /**
+     * @brief 断开连接信号
+     */
+    void disconnected();
+
+    /**
+     * @brief 收到响应信号
+     * @param response JSON 响应数据
+     */
+    void responseReceived(const QJsonObject& response);
+
+    /**
+     * @brief 错误信号
+     * @param msg 错误消息
+     */
+    void error(const QString& msg);
+
+private slots:
+    /**
+     * @brief 处理 socket readyRead 信号（接收数据）
+     */
+    void onReadyRead();
+
+    /**
+     * @brief 处理 socket 错误信号
+     * @param socketError socket 错误码
+     */
+    void onSocketError(QAbstractSocket::SocketError socketError);
+
+    /**
+     * @brief 处理连接状态变化
+     */
+    void onStateChanged(QAbstractSocket::SocketState state);
+
+private:
+    QTcpSocket* m_socket;      // TCP Socket
+    QByteArray m_buffer;       // 接收缓冲区（用于处理粘包/半包）
+    QString m_token;           // 认证 Token
+};
+
+#endif // TCPCLIENT_H
+
+
+====================
+FILE: client\transferwidget.cpp
+====================
+
+#include "transferwidget.h"
+#include "tcpclient.h"
+#include "protocolutils.h"
+
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFormLayout>
+#include <QMessageBox>
+#include <QDoubleValidator>
+#include <QIntValidator>
+#include <QRegularExpressionValidator>
+#include <QRegularExpression>
+#include <QTimer>
+
+TransferWidget::TransferWidget(TcpClient* client, const QString& token, QWidget* parent)
+    : QDialog(parent)
+    , m_client(client)
+    , m_token(token)
+{
+    setupUI();
+
+    // 连接客户端响应信号
+    connect(m_client, &TcpClient::responseReceived,
+            this, &TransferWidget::onResponseReceived);
+
+    // 设置对话框属性
+    setModal(true);
+    setWindowTitle("转账");
+}
+
+void TransferWidget::setupUI()
+{
+    // 创建输入框
+    m_targetAccountEdit = new QLineEdit(this);
+    m_targetAccountEdit->setPlaceholderText("请输入目标银行卡号 (16位)");
+    m_targetAccountEdit->setValidator(new QRegularExpressionValidator(QRegularExpression("^[0-9]{16}$"), this));
+    m_targetAccountEdit->setMinimumHeight(55);
+    m_targetAccountEdit->setStyleSheet("QLineEdit { font-size: 18px; padding-left: 10px; }");
+
+    m_targetNameEdit = new QLineEdit(this);
+    m_targetNameEdit->setPlaceholderText("请输入收款人真实姓名");
+    m_targetNameEdit->setMinimumHeight(55);
+    m_targetNameEdit->setStyleSheet("QLineEdit { font-size: 18px; padding-left: 10px; }");
+
+    m_amountEdit = new QLineEdit(this);
+    m_amountEdit->setPlaceholderText("请输入转账金额 (¥)");
+    m_amountEdit->setMinimumHeight(55);
+    m_amountEdit->setStyleSheet("QLineEdit { font-size: 18px; padding-left: 10px; }");
+
+    QDoubleValidator* amountValidator = new QDoubleValidator(0.01, 999999999.99, 2, this);
+    amountValidator->setNotation(QDoubleValidator::StandardNotation);
+    m_amountEdit->setValidator(amountValidator);
+
+    m_remarkEdit = new QLineEdit(this);
+    m_remarkEdit->setPlaceholderText("请输入备注（可选）");
+    m_remarkEdit->setMaxLength(200);
+    m_remarkEdit->setMinimumHeight(55);
+    m_remarkEdit->setStyleSheet("QLineEdit { font-size: 18px; padding-left: 10px; }");
+
+    m_transferBtn = new QPushButton("确认转账", this);
+    m_cancelBtn = new QPushButton("取消", this);
+    m_messageLabel = new QLabel("", this);
+    m_messageLabel->setWordWrap(true);
+    m_messageLabel->setAlignment(Qt::AlignCenter);
+
+    // 按钮样式
+    m_transferBtn->setMinimumHeight(50);
+    m_cancelBtn->setMinimumHeight(50);
+    m_transferBtn->setStyleSheet("QPushButton { font-size: 16px; background-color: #4CAF50; color: white; border-radius: 5px; }");
+    m_cancelBtn->setStyleSheet("QPushButton { font-size: 16px; border-radius: 5px; }");
+
+    // 创建布局
+    QFormLayout* formLayout = new QFormLayout();
+    formLayout->setSpacing(25);
+    formLayout->setLabelAlignment(Qt::AlignRight);
+    formLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    formLayout->addRow("目标卡号:", m_targetAccountEdit);
+    formLayout->addRow("收款人姓名:", m_targetNameEdit);
+    formLayout->addRow("转账金额 (¥):", m_amountEdit);
+    formLayout->addRow("备注:", m_remarkEdit);
+
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    buttonLayout->addStretch();
+    m_transferBtn->setMinimumWidth(150);
+    m_cancelBtn->setMinimumWidth(150);
+    buttonLayout->addWidget(m_transferBtn);
+    buttonLayout->addSpacing(30);
+    buttonLayout->addWidget(m_cancelBtn);
+    buttonLayout->addStretch();
+
+    QVBoxLayout* mainLayout = new QVBoxLayout(this);
+    mainLayout->addSpacing(10);
+    mainLayout->addLayout(formLayout);
+    mainLayout->addStretch();
+    mainLayout->addLayout(buttonLayout);
+    mainLayout->addSpacing(10);
+    mainLayout->addWidget(m_messageLabel);
+
+    // 设置边距
+    mainLayout->setContentsMargins(40, 40, 40, 40);
+
+    // 设置对话框大小
+    setMinimumSize(650, 450);
+    resize(650, 450);
+
+    // 连接按钮信号
+    connect(m_transferBtn, &QPushButton::clicked,
+            this, &TransferWidget::onTransferClicked);
+    connect(m_cancelBtn, &QPushButton::clicked,
+            this, &TransferWidget::onCancelClicked);
+
+    // 连接回车键
+    connect(m_amountEdit, &QLineEdit::returnPressed,
+            this, &TransferWidget::onTransferClicked);
+    connect(m_remarkEdit, &QLineEdit::returnPressed,
+            this, &TransferWidget::onTransferClicked);
+}
+
+void TransferWidget::onTransferClicked()
+{
+    // 验证输入
+    if (!validateInput()) {
+        return;
+    }
+
+    // 检查连接状态
+    if (!m_client->isConnected()) {
+        showMessage("未连接到服务器！", false);
+        return;
+    }
+
+    // 获取金额和备注
+    QString targetAccount = m_targetAccountEdit->text().trimmed();
+    QString targetName = m_targetNameEdit->text().trimmed();
+    double amount = m_amountEdit->text().toDouble();
+    QString remark = m_remarkEdit->text().trimmed();
+
+    // 构造转账请求（type=4）
+    QJsonObject requestData;
+    requestData["to_account"] = targetAccount;
+    requestData["to_name"] = targetName;
+    requestData["amount"] = amount;
+    requestData["remark"] = remark;
+
+    // 发送转账请求
+    m_client->sendRequest(4, m_token, requestData);
+
+    // 显示处理中消息
+    showMessage("正在转账...", true);
+    m_transferBtn->setEnabled(false);
+    m_cancelBtn->setEnabled(false);
+}
+
+void TransferWidget::onCancelClicked()
+{
+    reject(); //  关闭对话框，返回 QDialog::Rejected
+}
+
+void TransferWidget::onResponseReceived(const QJsonObject& response)
+{
+    // 只处理转账相关的响应
+    // 转账响应（成功或失败）都包含 amount 或 new_balance 字段
+    // - 转账成功：{"status": "success", "msg": "转账成功", "new_balance": xxx}
+    // - 转账失败：{"status": "error", "msg": "余额不足", "amount": xxx}
+    // 其他响应如余额查询、交易记录查询不包含这两个字段，会被过滤掉
+    if (!response.contains("amount") && !response.contains("new_balance")) {
+        // 不是转账响应，忽略（可能是余额查询或交易记录查询的响应）
+        return;
+    }
+
+    // 恢复按钮状态
+    m_transferBtn->setEnabled(true);
+    m_cancelBtn->setEnabled(true);
+
+    // 检查响应状态
+    QString status = response["status"].toString();
+    QString msg = response["msg"].toString();
+
+    if (status == "success") {
+        // 转账成功
+        showMessage(msg + "！", true);
+
+        // 延迟关闭对话框（让用户看到成功消息）
+        QTimer::singleShot(1000, this, [this]() {
+            accept();  // 关闭对话框，返回 QDialog::Accepted
+        });
+    }
+    else {
+        // 转账失败
+        showMessage(msg, false);
+        
+        // 如果是余额不足或其他业务错误，弹出警告框
+        if (msg.contains("余额不足")) {
+            QMessageBox::warning(this, "转账失败", "您的账户余额不足，请核对后再试。");
+        } else {
+            QMessageBox::warning(this, "转账失败", msg);
+        }
+    }
+}
+
+bool TransferWidget::validateInput()
+{
+    // 验证目标卡号
+    QString targetCard = m_targetAccountEdit->text().trimmed();
+    if (targetCard.length() != 16) {
+        showMessage("请输入 16 位目标卡号！", false);
+        m_targetAccountEdit->setFocus();
+        return false;
+    }
+
+    // 验证目标姓名
+    QString targetName = m_targetNameEdit->text().trimmed();
+    if (targetName.isEmpty()) {
+        showMessage("请输入收款人姓名！", false);
+        m_targetNameEdit->setFocus();
+        return false;
+    }
+
+    // 验证金额
+    QString amountStr = m_amountEdit->text().trimmed();
+    if (amountStr.isEmpty()) {
+        showMessage("请输入转账金额！", false);
+        m_amountEdit->setFocus();
+        return false;
+    }
+
+    bool ok;
+    double amount = amountStr.toDouble(&ok);
+    if (!ok || amount <= 0) {
+        showMessage("转账金额必须大于 0！", false);
+        m_amountEdit->setFocus();
+        return false;
+    }
+
+    // 验证金额格式（最多两位小数）
+    if (amountStr.contains('.') && amountStr.split('.')[1].length() > 2) {
+        showMessage("金额最多保留两位小数！", false);
+        m_amountEdit->setFocus();
+        return false;
+    }
+
+    return true;
+}
+
+
+void TransferWidget::showMessage(const QString& message, bool isSuccess)
+{
+    if (isSuccess) {
+        m_messageLabel->setStyleSheet("QLabel { color: green; font-weight: bold; }");
+    }
+    else {
+        m_messageLabel->setStyleSheet("QLabel { color: red; font-weight: bold; }");
+    }
+    m_messageLabel->setText(message);
+
+    // 如果是错误消息，3 秒后清除
+    if (!isSuccess) {
+        QTimer::singleShot(3000, this, [this]() {
+            m_messageLabel->setText("");
+        });
+    }
+}
+
+
+====================
+FILE: client\transferwidget.h
+====================
+
+#ifndef TRANSFERWIDGET_H
+#define TRANSFERWIDGET_H
+
+#include <QDialog>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QLabel>
+#include <QRadioButton>
+#include <QButtonGroup>
+
+class TcpClient;
+
+/**
+ * @brief 转账对话框
+ *
+ * 功能：
+ * - 支持通过账户ID或用户名转账
+ * - 输入转账金额
+ * - 输入备注（可选）
+ * - 发送转账请求
+ * - 显示转账结果
+ */
+class TransferWidget : public QDialog
+{
+    Q_OBJECT
+
+public:
+    /**
+     * @brief 构造函数
+     * @param client TCP 客户端指针
+     * @param token 认证 Token
+     * @param parent 父窗口
+     */
+    explicit TransferWidget(TcpClient* client, const QString& token, QWidget* parent = nullptr);
+
+    ~TransferWidget() = default;
+
+private slots:
+    /**
+     * @brief 处理转账按钮点击
+     */
+    void onTransferClicked();
+
+    /**
+     * @brief 处理取消按钮点击
+     */
+    void onCancelClicked();
+
+    /**
+     * @brief 处理服务器响应
+     * @param response JSON 响应数据
+     */
+    void onResponseReceived(const QJsonObject& response);
+
+private:
+    /**
+     * @brief 初始化 UI
+     */
+    void setupUI();
+
+    /**
+     * @brief 验证输入
+     * @return true 表示输入有效
+     */
+    bool validateInput();
+
+    /**
+     * @brief 显示消息提示
+     * @param message 消息内容
+     * @param isSuccess 是否为成功消息
+     */
+    void showMessage(const QString& message, bool isSuccess = true);
+
+private:
+    TcpClient* m_client;           // TCP 客户端
+    QString m_token;               // 认证 Token
+
+    // UI 控件
+    QLineEdit* m_targetAccountEdit;   // 目标卡号输入框
+    QLineEdit* m_targetNameEdit;      // 目标姓名输入框
+    QLineEdit* m_amountEdit;          // 金额输入框
+    QLineEdit* m_remarkEdit;          // 备注输入框
+    QPushButton* m_transferBtn;       // 转账按钮
+    QPushButton* m_cancelBtn;          // 取消按钮
+    QLabel* m_messageLabel;           // 消息提示标签
+};
+
+#endif // TRANSFERWIDGET_H
+
+
+====================
+FILE: server\database.cpp
+====================
+
+#include "database.h"
+#include "snowflake.h"
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QDebug>
+#include <QUuid>
+#include <QRandomGenerator>
+#include <QCryptographicHash>
+#include <QDateTime>
+
+Database::Database() : m_initialized(false) {}
+
+Database::~Database() {
+    close();
+}
+
+Database& Database::instance() {
+    static Database inst;
+    return inst;
+}
+
+bool Database::init(const DbConfig& config) {
+    if (m_initialized) return true;
+
+    m_db = QSqlDatabase::addDatabase("QMYSQL");
+    m_db.setHostName(config.host);
+    m_db.setPort(config.port);
+    m_db.setDatabaseName(config.databaseName);
+    m_db.setUserName(config.username);
+    m_db.setPassword(config.password);
+
+    if (!m_db.open()) {
+        qCritical() << "Failed to connect to MySQL:" << m_db.lastError().text();
+        return false;
+    }
+
+    if (!createUserTable() || !createAccountTable() || !createTransactionTable()) {
+        return false;
+    }
+
+    if (!createDefaultAdmin()) {
+        qWarning() << "Failed to create default admin";
+    }
+
+    m_initialized = true;
+    return true;
+}
+
+QSqlDatabase Database::getDatabase() {
+    return m_db;
+}
+
+void Database::close() {
+    if (m_db.isOpen()) {
+        m_db.close();
+        m_initialized = false;
+    }
+}
+
+bool Database::createUserTable() {
+    QSqlQuery query(m_db);
+    QString sql = R"(
+        CREATE TABLE IF NOT EXISTS User (
+            id BIGINT PRIMARY KEY,
+            card_number CHAR(16) UNIQUE NOT NULL,
+            username VARCHAR(50) UNIQUE NOT NULL,
+            password_hash VARCHAR(128) NOT NULL,
+            salt VARCHAR(64) NOT NULL,
+            is_admin TINYINT(1) DEFAULT 0,
+            is_approved TINYINT(1) DEFAULT 0,
+            full_name VARCHAR(50),
+            id_card VARCHAR(18),
+            phone VARCHAR(15),
+            birth_date DATE,
+            address VARCHAR(255),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_card (card_number),
+            INDEX idx_username (username)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    )";
+    if (!query.exec(sql)) {
+        qCritical() << "Failed to create User table:" << query.lastError().text();
+        return false;
+    }
+
+    return true;
+}
+
+bool Database::createAccountTable() {
+    QSqlQuery query(m_db);
+    QString sql = R"(
+        CREATE TABLE IF NOT EXISTS Account (
+            id BIGINT PRIMARY KEY,
+            user_id BIGINT NOT NULL,
+            balance DECIMAL(18, 2) NOT NULL DEFAULT 0.00,
+            status INT DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES User(id) ON DELETE CASCADE,
+            INDEX idx_user_id (user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    )";
+    if (!query.exec(sql)) {
+        qCritical() << "Failed to create Account table:" << query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool Database::createTransactionTable() {
+    QSqlQuery query(m_db);
+    QString sql = R"(
+        CREATE TABLE IF NOT EXISTS Transaction (
+            id BIGINT PRIMARY KEY,
+            from_account_id BIGINT,
+            to_account_id BIGINT,
+            amount DECIMAL(18, 2) NOT NULL,
+            type VARCHAR(20) NOT NULL,
+            remark VARCHAR(255),
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_from (from_account_id),
+            INDEX idx_to (to_account_id),
+            INDEX idx_time (timestamp)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    )";
+    if (!query.exec(sql)) {
+        qCritical() << "Failed to create Transaction table:" << query.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool Database::createDefaultAdmin() {
+    QSqlQuery checkQuery(m_db);
+    checkQuery.exec("SELECT COUNT(*) FROM User WHERE username = 'admin'");
+    if (checkQuery.next() && checkQuery.value(0).toInt() > 0) return true;
+
+    qint64 id = Snowflake::instance().nextId();
+    QString cardNumber = "6222000000000001"; // 固定管理卡号
+    QString username = "admin";
+    QString salt = QUuid::createUuid().toString(QUuid::WithoutBraces).left(16);
+    QString password = "admin123";
+    QByteArray hash = QCryptographicHash::hash((password + salt).toUtf8(), QCryptographicHash::Sha256);
+    QString passwordHash = hash.toHex();
+
+    QSqlQuery insertQuery(m_db);
+    insertQuery.prepare("INSERT INTO User (id, card_number, username, password_hash, salt, is_admin, is_approved) "
+                        "VALUES (:id, :card, :name, :hash, :salt, 1, 1)");
+    insertQuery.bindValue(":id", id);
+    insertQuery.bindValue(":card", cardNumber);
+    insertQuery.bindValue(":name", username);
+    insertQuery.bindValue(":hash", passwordHash);
+    insertQuery.bindValue(":salt", salt);
+
+    if (!insertQuery.exec()) {
+        qCritical() << "Failed to insert admin user:" << insertQuery.lastError().text();
+        return false;
+    }
+
+    // 创建账户
+    QSqlQuery accQuery(m_db);
+    accQuery.prepare("INSERT INTO Account (id, user_id, balance) VALUES (:id, :user_id, :balance)");
+    accQuery.bindValue(":id", Snowflake::instance().nextId());
+    accQuery.bindValue(":user_id", id);
+    accQuery.bindValue(":balance", 0.00);
+    return accQuery.exec();
+}
+
+QString Database::generateCardNumber() {
+    // 简单实现：6222 + 12位随机数
+    QString card = "6222";
+    for(int i=0; i<12; ++i) {
+        card.append(QString::number(QRandomGenerator::global()->bounded(10)));
+    }
+    return card;
+}
+
+
+====================
+FILE: server\database.h
+====================
+
+#ifndef DATABASE_H
+#define DATABASE_H
+
+#include <QSqlDatabase>
+#include <QString>
+
+/**
+ * @brief 数据库单例类 - 管理 SQLite 连接和表初始化
+ *
+ * 提供数据库初始化、连接管理的单例接口。
+ * 使用 SQLite 作为数据库引擎，创建 User、Account、Transaction 三个核心表。
+ */
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QString>
+#include <QDebug>
+#include <QUuid>
+#include <QRandomGenerator>
+#include <QCryptographicHash>
+
+/**
+ * @brief 数据库连接配置结构体
+ */
+struct DbConfig {
+    QString host;
+    int port;
+    QString databaseName;
+    QString username;
+    QString password;
+};
+
+class Database
+{
+public:
+    static Database& instance();
+
+    /**
+     * @brief 初始化数据库（连接 MySQL 并创建表）
+     * @param config 数据库配置
+     * @return true 表示初始化成功，false 表示失败
+     */
+    bool init(const DbConfig& config);
+
+    /**
+     * @brief 获取数据库连接
+     */
+    QSqlDatabase getDatabase();
+
+    /**
+     * @brief 关闭数据库连接
+     */
+    void close();
+
+    /**
+     * @brief 生成唯一的 16 位银行卡号
+     */
+    QString generateCardNumber();
+
+private:
+    Database();
+    ~Database();
+    Database(const Database&) = delete;
+    Database& operator=(const Database&) = delete;
+
+    bool createUserTable();
+    bool createAccountTable();
+    bool createTransactionTable();
+    bool createDefaultAdmin();
+
+    QSqlDatabase m_db;
+    bool m_initialized;
+};
+
+#endif // DATABASE_H
+
+
+====================
+FILE: server\main.cpp
+====================
+
+#include <QCoreApplication>
+#include <QDebug>
+#include <QCommandLineParser>
+
+#include "database.h"
+#include "tcpreactor.h"
+#include "protocolutils.h"
+
+int main(int argc, char *argv[])
+{
+    QCoreApplication app(argc, argv);
+    if(!ProtocolUtils::initConfig()){
+        return -1;                   //未设置密钥环境变量，为了安全退出
+    }
+    qInfo() << "环境检查通过，准备启动服务...";
+
+    // 设置应用信息
+    QCoreApplication::setApplicationName("BankServer");
+    QCoreApplication::setApplicationVersion("1.0.0");
+
+    // 命令行参数解析
+    QCommandLineParser parser;
+    parser.setApplicationDescription("Bank Server - Qt6 Reactor Banking System");
+    parser.addHelpOption();
+    parser.addVersionOption();
+
+    QCommandLineOption portOption(QStringList() << "p" << "port",
+                                  "Port to listen on (default: 9000)",
+                                  "port", "9000");
+    parser.addOption(portOption);
+
+    QCommandLineOption dbHostOption("host", "MySQL host (default: 127.0.0.1)", "host", "127.0.0.1");
+    QCommandLineOption dbPortOption("dbport", "MySQL port (default: 3306)", "dbport", "3306");
+    QCommandLineOption dbNameOption("dbname", "MySQL database name", "dbname", "bank_db");
+    QCommandLineOption dbUserOption("user", "MySQL username", "user", "bank");
+    QCommandLineOption dbPassOption("pass", "MySQL password", "pass", "123456");
+
+    parser.addOption(dbHostOption);
+    parser.addOption(dbPortOption);
+    parser.addOption(dbNameOption);
+    parser.addOption(dbUserOption);
+    parser.addOption(dbPassOption);
+
+    parser.process(app);
+
+    // 获取参数
+    quint16 port = parser.value(portOption).toUShort();
+    
+    DbConfig config;
+    config.host = parser.value(dbHostOption);
+    config.port = parser.value(dbPortOption).toInt();
+    config.databaseName = parser.value(dbNameOption);
+    config.username = parser.value(dbUserOption);
+    config.password = parser.value(dbPassOption);
+
+    qDebug() << "========================================";
+    qDebug() << "       Bank Server v1.0.0 (MySQL)";
+    qDebug() << "========================================";
+    qDebug() << "Configuration:";
+    qDebug() << "  Server Port:" << port;
+    qDebug() << "  MySQL Host: " << config.host;
+    qDebug() << "  MySQL DB:   " << config.databaseName;
+    qDebug() << "========================================\n";
+
+    // ==================== Step 1: 初始化数据库 ====================
+    qDebug() << "[Step 1] Initializing database...";
+    if (!Database::instance().init(config)) {
+        qCritical() << "ERROR: Failed to initialize database!";
+        return 1;
+    }
+    qDebug() << "SUCCESS: Database initialized:" << config.databaseName;
+
+    // ==================== Step 2: 启动 TCP Reactor ====================
+    qDebug() << "\n[Step 2] Starting TCP Reactor...";
+    TcpReactor reactor(port);
+    if (!reactor.start()) {
+        qCritical() << "ERROR: Failed to start TCP Reactor!";
+        qCritical() << "Please check if port" << port << "is already in use.";
+        return 1;
+    }
+
+    qDebug() << "\n========================================";
+    qDebug() << "  Server is running!";
+    qDebug() << "  Waiting for client connections...";
+    qDebug() << "========================================\n";
+    qDebug() << "Press Ctrl+C to stop the server.\n";
+
+    // ==================== Step 3: 进入事件循环 ====================
+    int exitCode = app.exec();
+
+    // 清理资源
+    qDebug() << "\nShutting down server...";
+    reactor.stop();
+
+    qDebug() << "Server stopped. Goodbye!";
+    return exitCode;
+}
+
+
+====================
+FILE: server\protocolutils.cpp
+====================
+
+#include "protocolutils.h"
+
+#include <QCryptographicHash>
+#include <QDataStream>
+#include <QIODevice>
+#include <QJsonDocument>
+#include <QDateTime>
+
+// 密钥：生产环境应从环境变量或配置文件读取
+// Retrieve SECRET_KEY from environment variable
+QByteArray ProtocolUtils::SECRET_KEY = "";
+
+bool ProtocolUtils::initConfig()
+{
+    SECRET_KEY = qgetenv("BANK_APP_SECRET_KEY");
+    if(SECRET_KEY.isEmpty()){
+        qCritical() << "FATAL: 未设置环境变量 'BANK_APP_SECRET_KEY'!";
+        return false;        
+    }
+    if(SECRET_KEY.length() < 16){
+        qWarning() << "密钥长度过短，考虑使用至少16位字符作为密钥";
+    }
+    return true;
+}
+
+QByteArray ProtocolUtils::packMessage(quint8 type, const QString& token, const QJsonObject& data)
+{
+    // 1. 序列化 JSON 数据（紧凑格式，无空格）
+    QByteArray jsonData = QJsonDocument(data).toJson(QJsonDocument::Compact);
+
+    // 2. 准备 Token 字段（128 字节定长，不足补 \0）
+    QByteArray tokenBytes = token.toUtf8();
+    if (tokenBytes.size() > 128) {
+        tokenBytes = tokenBytes.left(128);  // 截断
+    }
+    while (tokenBytes.size() < 128) {
+        tokenBytes.append('\0');  // 填充
+    }
+
+    // 3. 计算消息总长度（不包含长度字段自身的 4 字节）
+    quint32 totalLen = 1 + 128 + jsonData.size();  // type + token + json
+
+    // 4. 构造数据包
+    QByteArray packet;
+    packet.reserve(4 + totalLen);  // 预分配空间
+
+    // 写入长度（大端序）
+    quint32 bigEndianLen = qToBigEndian(totalLen);
+    packet.append(reinterpret_cast<const char*>(&bigEndianLen), 4);
+
+    // 写入消息类型
+    packet.append(static_cast<char>(type));
+
+    // 写入 Token（128 字节）
+    packet.append(tokenBytes);
+
+    // 写入 JSON 数据
+    packet.append(jsonData);
+
+    return packet;
+}
+
+bool ProtocolUtils::parseMessage(QByteArray& buffer, quint8& type, QString& token, QJsonObject& data)
+{
+    // 1. 检查是否有足够的数据读取长度字段
+    if (buffer.size() < 4) {
+        return false;  // 数据不完整
+    }
+
+    // 2. 读取消息总长度（大端序）
+    quint32 totalLen;
+    memcpy(&totalLen, buffer.constData(), 4);
+    totalLen = qFromBigEndian(totalLen);
+
+    // 3. 检查缓冲区是否有完整消息
+    if (buffer.size() < 4 + static_cast<int>(totalLen)) {
+        return false;  // 数据不完整
+    }
+
+    // 4. 直接从 buffer 读取数据（不使用 QDataStream）
+    int offset = 4;  // 跳过长度字段
+
+    // 读取消息类型（1 字节）
+    type = static_cast<quint8>(buffer[offset]);
+    offset += 1;
+
+    // 读取 Token（128 字节）
+    QByteArray tokenBytes = QByteArray::fromRawData(buffer.constData() + offset, 128);
+    token = QString::fromUtf8(tokenBytes).trimmed();  // 移除填充的 \0
+    offset += 128;
+
+    // 读取 JSON 数据
+    int jsonSize = static_cast<int>(totalLen) - 1 - 128;  // 总长 - type(1) - token(128)
+    QByteArray jsonData = QByteArray::fromRawData(buffer.constData() + offset, jsonSize);
+    data = QJsonDocument::fromJson(jsonData).object();
+
+    // 5. 从缓冲区移除已处理的数据
+    buffer.remove(0, 4 + static_cast<int>(totalLen));
+
+    return true;
+}
+
+QString ProtocolUtils::generateToken(const QString& userId, bool isAdmin)
+{
+    // 1. 生成时间戳
+    qint64 timestamp = QDateTime::currentSecsSinceEpoch();
+
+    // 2. 构造 payload: userId:timestamp:role
+    QString role = isAdmin ? "1" : "0";
+    QString payload = QString("%1:%2:%3").arg(userId).arg(timestamp).arg(role);
+
+    // 3. 计算 HMAC-SHA256 签名（只取前 15 字节 = 30 个十六进制字符）
+    QString signature = hmacSha256(payload.toUtf8(), SECRET_KEY);
+
+    // 4. 构造完整 token: userId:timestamp:role:signature
+    QString fullToken = payload + ":" + signature;
+
+    // 5. Base64 编码
+    QByteArray tokenBytes = fullToken.toUtf8().toBase64();
+    QString token = QString::fromUtf8(tokenBytes);
+
+    // 6. 确保 128 字节定长
+    while (token.size() < 128) {
+        token.append('\0');  // 用 null 字符填充
+    }
+
+    return token.left(128);  // 确保不超过 128 字节
+}
+
+bool ProtocolUtils::verifyToken(const QString& token, QString& userId, bool* isAdmin)
+{
+    // 1. 移除填充的 null 字符
+    QString cleanedToken = token;
+    while (cleanedToken.endsWith('\0')) {
+        cleanedToken.chop(1);
+    }
+
+    // 2. Base64 解码
+    QByteArray decoded = QByteArray::fromBase64(cleanedToken.toUtf8());
+    if (decoded.isEmpty()) {
+        return false;  // Base64 解码失败
+    }
+
+    QString fullToken = QString::fromUtf8(decoded);
+
+    // 3. 分割: userId:timestamp:role:signature
+    QStringList parts = fullToken.split(':');
+    if (parts.size() != 4) {
+        return false;  // 格式错误（旧格式有3个部分，新格式有4个）
+    }
+
+    QString userIdStr = parts[0];
+    QString timestampStr = parts[1];
+    QString roleStr = parts[2];
+    QString signature = parts[3];
+
+    // 4. 验证签名
+    QString payload = QString("%1:%2:%3").arg(userIdStr).arg(timestampStr).arg(roleStr);
+    QString expectedSig = hmacSha256(payload.toUtf8(), SECRET_KEY);
+
+    if (signature != expectedSig) {
+        return false;  // 签名无效
+    }
+
+    // 5. 验证时间戳（检查是否过期）
+    qint64 timestamp = timestampStr.toLongLong();
+    qint64 current = QDateTime::currentSecsSinceEpoch();
+    if (current - timestamp > TOKEN_VALIDITY_PERIOD) {
+        return false;  // Token 已过期
+    }
+
+    // 6. 返回 userId (UUID) 和 role
+    userId = userIdStr;
+    if (isAdmin) {
+        *isAdmin = (roleStr == "1");
+    }
+    return true;
+}
+
+QString ProtocolUtils::hmacSha256(const QByteArray& data, const QByteArray& key)
+{
+    // 简化的 HMAC-SHA256 实现
+    // 标准 HMAC: H(K ^ opad || H(K ^ ipad || text))
+
+    const int blockSize = 64;  // SHA-256 块大小
+
+    // 1. 准备密钥
+    QByteArray keyBlock = key;
+    if (keyBlock.size() > blockSize) {
+        keyBlock = QCryptographicHash::hash(key, QCryptographicHash::Sha256);
+    }
+    while (keyBlock.size() < blockSize) {
+        keyBlock.append('\0');
+    }
+
+    // 2. 生成 ipad 和 opad
+    QByteArray iPadded;
+    QByteArray oPadded;
+    for (int i = 0; i < blockSize; ++i) {
+        iPadded.append(static_cast<char>(keyBlock[i] ^ 0x36));  // ipad = 0x36
+        oPadded.append(static_cast<char>(keyBlock[i] ^ 0x5c));  // opad = 0x5c
+    }
+
+    // 3. 计算内层哈希: H(K ^ ipad || data)
+    QByteArray innerHash = QCryptographicHash::hash(
+        iPadded + data,
+        QCryptographicHash::Sha256
+    );
+
+    // 4. 计算外层哈希: H(K ^ opad || innerHash)
+    QByteArray outerHash = QCryptographicHash::hash(
+        oPadded + innerHash,
+        QCryptographicHash::Sha256
+    );
+
+    // 5. 返回前 15 字节的十六进制字符串（30 个字符）
+    // 这样可以保证 Base64 后不超过 64 字节
+    QByteArray shortenedHash = outerHash.left(15);
+    return QString::fromUtf8(shortenedHash.toHex());
+}
+
+
+====================
+FILE: server\protocolutils.h
+====================
+
+#ifndef PROTOCOLUTILS_H
+#define PROTOCOLUTILS_H
+
+#include <QByteArray>
+#include <QJsonObject>
+#include <QString>
+
+/**
+ * @brief 协议工具类 - 处理 TCP 消息的打包和解包
+ *
+ * 消息帧格式:
+ * [4 bytes: Length] [1 byte: Type] [128 bytes: Token] [Variable: JSON]
+ * - Length: 大端序 uint32，不包含自身 4 字节
+ * - Type: uint8，0=响应, 1=注册, 2=登录, 3=查余额, 4=转账, 5=查流水
+ * - Token: 128 字节定长，不足补 \0
+ * - JSON: UTF-8 编码的 JSON 数据
+ */
+class ProtocolUtils
+{
+public:
+    /**
+     * @brief 打包消息
+     * @param type 消息类型 (1-5)
+     * @param token 认证 Token（可为空）
+     * @param data JSON 数据体
+     * @return 打包后的完整消息帧
+     */
+    static QByteArray packMessage(quint8 type, const QString& token, const QJsonObject& data);
+
+    static bool initConfig();
+    
+    /**
+     * @brief 解包消息（处理粘包/半包）
+     * @param buffer 接收缓冲区 [in/out]，成功后会移除已处理的数据
+     * @param type [out] 消息类型
+     * @param token [out] Token（128 字节）
+     * @param data [out] JSON 数据
+     * @return true 表示提取到完整消息，false 表示数据不完整
+     */
+    static bool parseMessage(QByteArray& buffer, quint8& type, QString& token, QJsonObject& data);
+
+    /**
+     * @brief 生成认证 Token
+     * 格式: base64(userId:timestamp:role:HMAC-SHA256(payload+SECRET_KEY))
+     * @param userId 用户 ID
+     * @param isAdmin 是否是管理员
+     * @return 128 字节定长 Token
+     */
+    static QString generateToken(const QString& userId, bool isAdmin = false);
+
+    /**
+     * @brief 验证 Token
+     * @param token Token 字符串
+     * @param userId [out] 用户 ID (UUID)
+     * @param isAdmin [out] 是否是管理员（可选）
+     * @return true 表示 Token 有效
+     */
+    static bool verifyToken(const QString& token, QString& userId, bool* isAdmin = nullptr);
+
+private:
+    // HMAC 签名密钥（生产环境应从配置文件读取）
+    static  QByteArray SECRET_KEY;
+
+    // Token 有效期（秒），默认 24 小时
+    static const qint64 TOKEN_VALIDITY_PERIOD = 86400;
+
+    /**
+     * @brief 计算 HMAC-SHA256 签名（只取前 16 字节以节省空间）
+     * @param data 待签名数据
+     * @param key 密钥
+     * @return 十六进制签名字符串（32 个字符）
+     */
+    static QString hmacSha256(const QByteArray& data, const QByteArray& key);
+};
+
+#endif // PROTOCOLUTILS_H
+
+
+====================
+FILE: server\snowflake.h
+====================
+
+#ifndef SNOWFLAKE_H
+#define SNOWFLAKE_H
+
+#include <QtGlobal>
+#include <QDateTime>
+#include <QMutex>
+
+/**
+ * @brief 雪花算法 ID 生成器
+ * 
+ * 格式：1位符号位 + 41位时间戳 + 10位机器ID + 12位序列号
+ */
+class Snowflake
+{
+public:
+    static Snowflake& instance() {
+        static Snowflake inst;
+        return inst;
+    }
+
+    /**
+     * @brief 设置机器 ID (0-1023)
+     */
+    void setWorkerId(qint64 workerId) {
+        if (workerId >= 0 && workerId <= MAX_WORKER_ID) {
+            m_workerId = workerId;
+        }
+    }
+
+    /**
+     * @brief 生成下一个唯一 ID
+     */
+    qint64 nextId() {
+        QMutexLocker locker(&m_mutex);
+
+        qint64 timestamp = currentTimeMillis();
+
+        if (timestamp < m_lastTimestamp) {
+            // 时钟回拨处理，简单等待或报错
+            return -1;
+        }
+
+        if (m_lastTimestamp == timestamp) {
+            // 同一毫秒内，序列号递增
+            m_sequence = (m_sequence + 1) & MAX_SEQUENCE;
+            if (m_sequence == 0) {
+                // 序列号溢出，等待下一毫秒
+                timestamp = tilNextMillis(m_lastTimestamp);
+            }
+        } else {
+            // 不同毫秒，序列号重置
+            m_sequence = 0;
+        }
+
+        m_lastTimestamp = timestamp;
+
+        // 拼接 ID
+        return ((timestamp - EPOCH) << TIMESTAMP_SHIFT) |
+               (m_workerId << WORKER_ID_SHIFT) |
+               m_sequence;
+    }
+
+private:
+    Snowflake() 
+        : m_workerId(1)
+        , m_sequence(0)
+        , m_lastTimestamp(-1) 
+    {}
+
+    qint64 currentTimeMillis() {
+        return QDateTime::currentMSecsSinceEpoch();
+    }
+
+    qint64 tilNextMillis(qint64 lastTimestamp) {
+        qint64 timestamp = currentTimeMillis();
+        while (timestamp <= lastTimestamp) {
+            timestamp = currentTimeMillis();
+        }
+        return timestamp;
+    }
+
+    static const qint64 EPOCH = 1672531200000LL; // 2023-01-01 00:00:00
+
+    static const qint64 WORKER_ID_BITS = 10;
+    static const qint64 SEQUENCE_BITS = 12;
+
+    static const qint64 MAX_WORKER_ID = (1LL << WORKER_ID_BITS) - 1;
+    static const qint64 MAX_SEQUENCE = (1LL << SEQUENCE_BITS) - 1;
+
+    static const qint64 WORKER_ID_SHIFT = SEQUENCE_BITS;
+    static const qint64 TIMESTAMP_SHIFT = SEQUENCE_BITS + WORKER_ID_BITS;
+
+    qint64 m_workerId;
+    qint64 m_sequence;
+    qint64 m_lastTimestamp;
+    QMutex m_mutex;
+};
+
+#endif // SNOWFLAKE_H
+
+
+====================
+FILE: server\tcpreactor.cpp
+====================
+
+#include "tcpreactor.h"
+#include "protocolutils.h"
+#include <QDebug>
+#include <QDataStream>
+
+TcpReactor::TcpReactor(quint16 port, QObject* parent)
+    : QObject(parent)
+    , m_port(port)
+    , m_server(nullptr)
+{
+    m_server = new QTcpServer(this);
+
+    // 连接信号槽
+    connect(m_server, &QTcpServer::newConnection,
+            this, &TcpReactor::onNewConnection);
+}
+
+bool TcpReactor::start()
+{
+    if (!m_server->listen(QHostAddress::Any, m_port)) {
+        qCritical() << "Failed to start server:" << m_server->errorString();
+        return false;
+    }
+
+    qDebug() << "Server started successfully, listening on port" << m_port;
+    return true;
+}
+
+void TcpReactor::stop()
+{
+    if (m_server->isListening()) {
+        // 断开所有客户端连接
+        for (QTcpSocket* socket : m_buffers.keys()) {
+            socket->disconnectFromHost();
+        }
+
+        m_server->close();
+        qDebug() << "Server stopped";
+    }
+}
+
+void TcpReactor::onNewConnection()
+{
+    QTcpSocket* clientSocket = m_server->nextPendingConnection();
+    if (!clientSocket) {
+        return;
+    }
+
+    // 初始化该 Socket 的状态
+    m_buffers[clientSocket] = QByteArray();
+    m_authStatus[clientSocket] = false;
+    m_socketToUserId[clientSocket] = 0;
+    m_socketIsAdmin[clientSocket] = false;
+
+    qDebug() << "New client connected:" << clientSocket->peerAddress().toString()
+             << "port" << clientSocket->peerPort();
+
+    // 连接信号槽
+    connect(clientSocket, &QTcpSocket::readyRead,
+            this, &TcpReactor::onReadyRead);
+    connect(clientSocket, &QTcpSocket::disconnected,
+            this, &TcpReactor::onDisconnected);
+    connect(clientSocket, &QTcpSocket::errorOccurred,
+            this, &TcpReactor::onSocketError);
+}
+
+void TcpReactor::onReadyRead()
+{
+    QTcpSocket* socket = qobject_cast<QTcpSocket*>(sender());
+    if (!socket) {
+        return;
+    }
+
+    // 累积数据到缓冲区
+    m_buffers[socket] += socket->readAll();
+
+    quint8 type;
+    QString token;
+    QJsonObject req;
+
+    // 循环解析完整消息（处理粘包）
+    while (ProtocolUtils::parseMessage(m_buffers[socket], type, token, req)) {
+        qDebug() << "Received message - Type:" << type
+                 << "from" << socket->peerAddress().toString();
+
+        QJsonObject res;
+
+        // 压力测试：tokenUserId 和 tokenIsAdmin 移到此處
+        QString tokenUserId;
+        bool tokenIsAdmin = false;
+
+        // ==================== 认证中间件 ====================
+        // type=1 (注册) 和 type=2 (登录) 不需要认证
+        if (type != 1 && type != 2) {
+            // 检查认证状态
+            // if (!m_authStatus.value(socket, false)) {
+            //     qWarning() << "Unauthorized request from" << socket->peerAddress().toString();
+            //     res = {{"status", "error"}, {"msg", "未认证，请先登录"}};
+            //     sendResponse(socket, res);
+            //     continue;
+            // }
+
+            // 验证 Token 签名和角色
+            if (!ProtocolUtils::verifyToken(token, tokenUserId, &tokenIsAdmin)) {
+                qWarning() << "Invalid token from" << socket->peerAddress().toString();
+                res = {{"status", "error"}, {"msg", "Token 无效"}};
+                sendResponse(socket, res);
+                continue;
+            }
+
+            // 验证 Token 中的 userId 是否与绑定的 userId 一致
+            // if (tokenUserId != m_socketToUserId[socket]) {
+            //     qWarning() << "Token mismatch for" << socket->peerAddress().toString();
+            //     res = {{"status", "error"}, {"msg", "Token 与用户不匹配"}};
+            //     sendResponse(socket, res);
+            //     continue;
+            // }
+
+            // 管理员权限检查（type 6-12, 14 需要管理员权限，type 13是用户修改密码）
+            if ((type >= 6 && type <= 12) || type == 14) {
+                if (!tokenIsAdmin || !m_socketIsAdmin[socket]) {
+                    qWarning() << "Unauthorized admin request from user" << tokenUserId;
+                    res = {{"status", "error"}, {"msg", "需要管理员权限"}};
+                    sendResponse(socket, res);
+                    continue;
+                }
+            }
+        }
+
+        // ==================== 路由分发 ====================
+        // 壓力測試：userId 改為 tokenUserId
+        QString userId = tokenUserId;
+
+        try {
+            switch (type) {
+            case 1:  // 注册
+                qDebug() << "Routing to UserController::registerUser";
+                res = m_userCtrl.registerUser(req);
+                break;
+
+            case 2:  // 登录
+                qDebug() << "Routing to UserController::login";
+                res = m_userCtrl.login(req);
+                if (res["status"] == "success") {
+                    QString newUserId = res["user_id"].toString();  // UUID 字符串
+                    bool isAdmin = res.contains("is_admin") ? res["is_admin"].toBool() : false;
+                    handleAuthSuccess(socket, newUserId, isAdmin);
+
+                    // 生成 Token 并返回（带 isAdmin 参数）
+                    QString token = ProtocolUtils::generateToken(newUserId, isAdmin);
+                    res["token"] = token;
+                    qDebug() << ">>> DEBUG TOKEN FOR PYTHON:" << token;
+                    qDebug() << "User" << newUserId << "logged in successfully, token generated"
+                             << "(admin:" << isAdmin << ")";
+                    
+                }
+                break;
+
+            case 3:  // 查询余额
+                qDebug() << "Routing to AccountController::getBalance for user" << userId;
+                res = m_accountCtrl.getBalance(userId);
+                break;
+
+            case 4:  // 转账
+                qDebug() << "Routing to AccountController::transfer for user" << userId;
+                res = m_accountCtrl.transfer(userId, req);
+                break;
+
+            case 5:  // 查询交易流水
+                qDebug() << "Routing to TransactionController::getTransactions for user" << userId;
+                res = m_txnCtrl.getTransactions(userId, req);
+                break;
+
+            case 6:  // 审批用户（管理员）
+                qDebug() << "Routing to AdminController::approveUser";
+                res = m_adminCtrl.approveUser(req);
+                break;
+
+            case 7:  // 获取待审批用户列表（管理员）
+                qDebug() << "Routing to AdminController::getPendingUsers";
+                res = m_adminCtrl.getPendingUsers(req);
+                break;
+
+            case 8:  // 获取所有用户信息（管理员）
+                qDebug() << "Routing to AdminController::getAllUsers";
+                res = m_adminCtrl.getAllUsers(req);
+                break;
+
+            case 9:  // 修改用户余额（管理员）
+                qDebug() << "Routing to AdminController::setUserBalance";
+                res = m_adminCtrl.setUserBalance(req);
+                break;
+
+            case 10:  // 修改用户信息（管理员）
+                qDebug() << "Routing to AdminController::updateUserInfo";
+                res = m_adminCtrl.updateUserInfo(req);
+                break;
+
+            case 11:  // 添加用户（管理员）
+                qDebug() << "Routing to AdminController::createUser";
+                res = m_adminCtrl.createUser(req);
+                break;
+
+            case 12:  // 重置密码（管理员）
+                qDebug() << "Routing to AdminController::resetPassword";
+                res = m_adminCtrl.resetPassword(req);
+                break;
+
+            case 13:  // 用户修改密码
+                qDebug() << "Routing to UserController::changePassword for user" << userId;
+                res = m_userCtrl.changePassword(req);
+                break;
+
+            case 14:  // 管理员修改个人信息
+                qDebug() << "Routing to AdminController::updateProfile";
+                res = m_adminCtrl.updateProfile(req);
+                break;
+
+            default:
+                qWarning() << "Unknown message type:" << type;
+                res = {{"status", "error"}, {"msg", "未知消息类型"}};
+                break;
+            }
+        } catch (const std::exception& e) {
+            qCritical() << "Exception handling message:" << e.what();
+            res = {{"status", "error"}, {"msg", "服务器内部错误"}};
+        }
+
+        // 发送响应
+        sendResponse(socket, res);
+    }
+}
+
+void TcpReactor::onDisconnected()
+{
+    QTcpSocket* socket = qobject_cast<QTcpSocket*>(sender());
+    if (!socket) {
+        return;
+    }
+
+    qDebug() << "Client disconnected:" << socket->peerAddress().toString();
+
+    // 清理该 Socket 的所有状态
+    m_buffers.remove(socket);
+    m_authStatus.remove(socket);
+    m_socketToUserId.remove(socket);
+    m_socketIsAdmin.remove(socket);
+
+    socket->deleteLater();
+}
+
+void TcpReactor::onSocketError(QAbstractSocket::SocketError socketError)
+{
+    QTcpSocket* socket = qobject_cast<QTcpSocket*>(sender());
+    if (!socket) {
+        return;
+    }
+
+    qWarning() << "Socket error for" << socket->peerAddress().toString()
+               << ":" << socket->errorString();
+}
+
+void TcpReactor::sendResponse(QTcpSocket* socket, const QJsonObject& res)
+{
+    if (!socket || socket->state() != QAbstractSocket::ConnectedState) {
+        qWarning() << "Cannot send response: socket is not connected";
+        return;
+    }
+
+    // 打包响应消息（type=0 表示响应）
+    QByteArray packet = ProtocolUtils::packMessage(0, "", res);
+
+    // 发送数据
+    qint64 written = socket->write(packet);
+    if (written != packet.size()) {
+        qWarning() << "Failed to write complete packet:" << written << "/" << packet.size();
+    }
+
+    socket->flush();
+
+    qDebug() << "Response sent - status:" << res["status"].toString()
+             << "msg:" << res["msg"].toString();
+}
+
+void TcpReactor::handleAuthSuccess(QTcpSocket* socket, const QString& userId, bool isAdmin)
+{
+    m_authStatus[socket] = true;
+    m_socketToUserId[socket] = userId;
+    m_socketIsAdmin[socket] = isAdmin;
+    qDebug() << "Authentication successful for user" << userId
+             << "(admin:" << isAdmin << ")"
+             << ", socket" << socket->peerAddress().toString();
+}
+
+
+====================
+FILE: server\tcpreactor.h
+====================
+
+#ifndef TCPREACTOR_H
+#define TCPREACTOR_H
+
+#include <QObject>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QHash>
+#include <QByteArray>
+#include <QJsonObject>
+#include "controller/usercontroller.h"
+#include "controller/accountcontroller.h"
+#include "controller/transactioncontroller.h"
+#include "controller/admincontroller.h"
+
+/**
+ * @brief TCP Reactor - 单线程事件循环处理并发连接
+ *
+ * 基于 Reactor 模式的 TCP 服务器：
+ * - 使用 Qt 事件循环处理所有 I/O 事件
+ * - 每个连接维护独立的接收缓冲区
+ * - 认证状态和 Socket-UserId 映射
+ * - 消息路由到对应的 Controller 处理
+ */
+class TcpReactor : public QObject
+{
+    Q_OBJECT
+
+public:
+    /**
+     * @brief 构造函数
+     * @param port 监听端口
+     * @param parent 父对象
+     */
+    explicit TcpReactor(quint16 port, QObject* parent = nullptr);
+    ~TcpReactor() = default;
+
+    /**
+     * @brief 启动服务器
+     * @return 成功返回 true，失败返回 false
+     */
+    bool start();
+
+    /**
+     * @brief 停止服务器
+     */
+    void stop();
+
+private slots:
+    /**
+     * @brief 新连接槽函数 - QTcpServer::newConnection 触发
+     */
+    void onNewConnection();
+
+    /**
+     * @brief 数据可读槽函数 - QTcpSocket::readyRead 触发
+     */
+    void onReadyRead();
+
+    /**
+     * @brief 连接断开槽函数 - QTcpSocket::disconnected 触发
+     */
+    void onDisconnected();
+
+    /**
+     * @brief Socket 错误槽函数
+     */
+    void onSocketError(QAbstractSocket::SocketError socketError);
+
+private:
+    /**
+     * @brief 发送响应消息给客户端
+     * @param socket 目标 Socket
+     * @param res 响应 JSON（type=0 表示响应）
+     */
+    void sendResponse(QTcpSocket* socket, const QJsonObject& res);
+
+    /**
+     * @brief 处理认证成功 - 设置认证状态和映射
+     * @param socket 客户端 Socket
+     * @param userId 用户 ID (UUID)
+     * @param isAdmin 是否是管理员
+     */
+    void handleAuthSuccess(QTcpSocket* socket, const QString& userId, bool isAdmin = false);
+
+    /**
+     * @brief 验证 Token
+     * @param token Token 字符串
+     * @param socket 客户端 Socket
+     * @return 验证成功返回 true
+     */
+    bool validateToken(const QString& token, QTcpSocket* socket);
+
+    // ==================== 成员变量 ====================
+
+    quint16 m_port;                           // 监听端口
+    QTcpServer* m_server;                     // TCP 服务器
+
+    // 连接管理
+    QHash<QTcpSocket*, QByteArray> m_buffers;        // Socket → 接收缓冲区
+    QHash<QTcpSocket*, bool> m_authStatus;           // Socket → 认证状态
+    QHash<QTcpSocket*, QString> m_socketToUserId;    // Socket → UserId (UUID) 映射
+    QHash<QTcpSocket*, bool> m_socketIsAdmin;        // Socket → IsAdmin 映射
+
+    // Controller 层实例
+    UserController m_userCtrl;
+    AccountController m_accountCtrl;
+    TransactionController m_txnCtrl;
+    AdminController m_adminCtrl;
+};
+
+#endif // TCPREACTOR_H
+
+
+====================
+FILE: server\controller\accountcontroller.cpp
+====================
+
+#include "accountcontroller.h"
+#include <QDebug>
+
+AccountController::AccountController(QObject* parent)
+    : QObject(parent)
+    , m_service()
+{
+}
+
+QJsonObject AccountController::getBalance(const QString& userId)
+{
+    // 1. 用户 ID 验证
+    if (userId.isEmpty()) {
+        return errorResponse("无效的用户 ID");
+    }
+
+    qDebug() << "处理余额查询请求: userId =" << userId;
+
+    // 2. 调用 Service 层
+    QJsonObject res = m_service.getBalance(userId);
+
+    // 3. 记录结果
+    if (res["status"] == "success") {
+        double balance = res["balance"].toDouble();
+        qDebug() << "余额查询成功: userId =" << userId << ", balance =" << balance;
+    } else {
+        qWarning() << "余额查询失败: userId =" << userId << ", reason:" << res["msg"].toString();
+    }
+
+    return res;
+}
+
+QJsonObject AccountController::transfer(const QString& userId, const QJsonObject& req)
+{
+    // 1. 用户 ID 验证
+    if (userId.isEmpty()) {
+        return errorResponse("无效的用户 ID");
+    }
+
+    // 2. 参数验证
+    qint64 toAccountId;
+    double amount;
+    QString remark;
+
+    if (!validateTransferParams(req, toAccountId, amount, remark)) {
+        return errorResponse("转账参数无效");
+    }
+
+    qDebug() << "处理转账请求: fromUserId =" << userId
+             << ", toAccountId =" << toAccountId
+             << ", amount =" << amount;
+
+    // 3. 如果使用账号ID转账，先检查是否转账给自己
+    if (toAccountId > 0) {
+        qint64 fromAccountId = m_service.getAccountIdByUserId(userId);
+        if (fromAccountId == toAccountId) {
+            qWarning() << "转账失败：不能转账给自己";
+            return transferErrorResponse("不能转账给自己", amount);
+        }
+    }
+    // 如果使用用户名或userid转账（toAccountId == -1），安全检查将在 Service 层进行
+
+    // 4. 调用 Service 层（支持 to_account、to_username 和 to_userid 三种方式）
+    QJsonObject res = m_service.transfer(userId, req);
+
+    // 5. 记录结果
+    if (res["status"] == "success") {
+        double newBalance = res["new_balance"].toDouble();
+        qDebug() << "转账成功: userId =" << userId << ", new_balance =" << newBalance;
+    } else {
+        qWarning() << "转账失败: userId =" << userId << ", reason:" << res["msg"].toString();
+    }
+
+    return res;
+}
+
+bool AccountController::validateTransferParams(
+    const QJsonObject& req,
+    qint64& toAccountId,
+    double& amount,
+    QString& remark)
+{
+    // 1. 检查必填字段（支持 to_account、to_username 或 to_userid）
+    if (!req.contains("amount")) {
+        qWarning() << "转账参数缺失：amount";
+        return false;
+    }
+
+    if (!req.contains("to_account") && !req.contains("to_username") && !req.contains("to_userid")) {
+        qWarning() << "转账参数缺失：to_account、to_username 或 to_userid";
+        return false;
+    }
+
+    // 2. 解析目标账户（支持三种方式）
+    if (req.contains("to_account")) {
+        // 方式1：通过账号ID转账
+        bool ok1;
+        toAccountId = req["to_account"].toVariant().toLongLong(&ok1);
+        if (!ok1 || toAccountId <= 0) {
+            qWarning() << "目标账户 ID 无效:" << req["to_account"];
+            return false;
+        }
+    } else {
+        // 方式2/3：通过用户名或userid转账，设置 toAccountId = -1 表示需要后续查询
+        toAccountId = -1;
+    }
+
+    // 3. 解析转账金额
+    amount = req["amount"].toDouble();
+    if (amount <= 0) {
+        qWarning() << "转账金额无效:" << amount;
+        return false;
+    }
+
+    // 4. 金额精度检查（最多 2 位小数）
+    QString amountStr = QString::number(amount, 'f', 2);
+    if (QString::number(amount, 'f', 2) != QString::number(amount, 'f', 10).left(QString::number(amount, 'f', 10).indexOf('.') + 3).leftJustified(amountStr.length(), '0')) {
+        // 简化检查：验证金额不超过 2 位小数
+        double rounded = qRound(amount * 100.0) / 100.0;
+        if (qFuzzyCompare(amount, rounded)) {
+            amount = rounded;
+        }
+    }
+
+    // 5. 金额上限检查（单笔转账不超过 100 万）
+    if (amount > 1000000.0) {
+        qWarning() << "转账金额超过上限:" << amount;
+        return false;
+    }
+
+    // 6. 解析备注（可选）
+    remark = req.value("remark").toString();
+    if (remark.length() > 100) {
+        remark = remark.left(100); // 限制备注长度
+    }
+
+    return true;
+}
+
+QJsonObject AccountController::errorResponse(const QString& msg)
+{
+    return {
+        {"status", "error"},
+        {"msg", msg}
+    };
+}
+
+QJsonObject AccountController::transferErrorResponse(const QString& msg, double amount)
+{
+    return {
+        {"status", "error"},
+        {"msg", msg},
+        {"amount", amount}
+    };
+}
+
+
+====================
+FILE: server\controller\accountcontroller.h
+====================
+
+#ifndef ACCOUNTCONTROLLER_H
+#define ACCOUNTCONTROLLER_H
+
+#include <QObject>
+#include <QJsonObject>
+#include "../service/accountservice.h"
+
+/**
+ * @brief 账户控制器 - 处理账户相关的请求
+ *
+ * 职责：
+ * - 参数验证
+ * - 调用 Service 层
+ * - 返回统一格式的 JSON 响应
+ */
+class AccountController : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit AccountController(QObject* parent = nullptr);
+    ~AccountController() = default;
+
+    /**
+     * @brief 处理余额查询请求
+     * @param userId 用户 ID（UUID）
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "查询成功", "balance": 1000.00}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject getBalance(const QString& userId);
+
+    /**
+     * @brief 处理转账请求
+     * @param userId 转出用户 ID（UUID）
+     * @param req 请求 JSON：
+     *             - "to_account": 目标账户 ID (qint64)
+     *             - "to_username": 目标用户名 (QString)
+     *             - "to_userid": 目标6位数字用户ID (QString)
+     *             - "amount": 转账金额 (double)
+     *             - "remark": 备注 (QString, 可选)
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "转账成功", "new_balance": 900.00}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject transfer(const QString& userId, const QJsonObject& req);
+
+private:
+    AccountService m_service;
+
+    /**
+     * @brief 验证转账参数
+     * @param req 请求 JSON
+     * @param toAccountId [out] 目标账户 ID
+     * @param amount [out] 转账金额
+     * @param remark [out] 备注
+     * @return 验证通过返回 true，否则返回 false
+     */
+    bool validateTransferParams(
+        const QJsonObject& req,
+        qint64& toAccountId,
+        double& amount,
+        QString& remark
+    );
+
+    /**
+     * @brief 构造错误响应
+     */
+    QJsonObject errorResponse(const QString& msg);
+
+    /**
+     * @brief 构造转账错误响应（包含amount字段，用于客户端识别）
+     */
+    QJsonObject transferErrorResponse(const QString& msg, double amount);
+};
+
+#endif // ACCOUNTCONTROLLER_H
+
+
+====================
+FILE: server\controller\admincontroller.cpp
+====================
+
+#include "admincontroller.h"
+
+AdminController::AdminController(QObject* parent)
+    : QObject(parent)
+    , m_service()
+{
+}
+
+QJsonObject AdminController::approveUser(const QJsonObject& req)
+{
+    return m_service.approveUser(req);
+}
+
+QJsonObject AdminController::getPendingUsers(const QJsonObject& req)
+{
+    return m_service.getPendingUsers(req);
+}
+
+QJsonObject AdminController::getAllUsers(const QJsonObject& req)
+{
+    return m_service.getAllUsers(req);
+}
+
+QJsonObject AdminController::setUserBalance(const QJsonObject& req)
+{
+    return m_service.setUserBalance(req);
+}
+
+QJsonObject AdminController::updateUserInfo(const QJsonObject& req)
+{
+    return m_service.updateUserInfo(req);
+}
+
+QJsonObject AdminController::createUser(const QJsonObject& req)
+{
+    return m_service.createUser(req);
+}
+
+QJsonObject AdminController::resetPassword(const QJsonObject& req)
+{
+    return m_service.resetPassword(req);
+}
+
+QJsonObject AdminController::updateProfile(const QJsonObject& req)
+{
+    return m_service.updateProfile(req);
+}
+
+
+====================
+FILE: server\controller\admincontroller.h
+====================
+
+#ifndef ADMINCONTROLLER_H
+#define ADMINCONTROLLER_H
+
+#include <QObject>
+#include <QJsonObject>
+#include "../service/adminservice.h"
+
+/**
+ * @brief 管理员控制器 - 处理管理员相关的请求
+ *
+ * 消息类型：
+ * - Type 6: 审批用户
+ * - Type 7: 获取待审批用户列表
+ * - Type 8: 获取所有用户信息
+ * - Type 9: 修改用户余额
+ * - Type 10: 修改用户信息
+ */
+class AdminController : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit AdminController(QObject* parent = nullptr);
+    ~AdminController() = default;
+
+    /**
+     * @brief 处理审批用户请求 (Type 6)
+     * @param req 请求 JSON：{"user_id": 123, "approve": true/false}
+     * @return 响应 JSON
+     */
+    QJsonObject approveUser(const QJsonObject& req);
+
+    /**
+     * @brief 处理获取待审批用户列表请求 (Type 7)
+     * @param req 请求 JSON：{}
+     * @return 响应 JSON
+     */
+    QJsonObject getPendingUsers(const QJsonObject& req);
+
+    /**
+     * @brief 处理获取所有用户信息请求 (Type 8)
+     * @param req 请求 JSON：{}
+     * @return 响应 JSON
+     */
+    QJsonObject getAllUsers(const QJsonObject& req);
+
+    /**
+     * @brief 处理修改用户余额请求 (Type 9)
+     * @param req 请求 JSON：{"user_id": 123, "new_balance": 2000.00}
+     * @return 响应 JSON
+     */
+    QJsonObject setUserBalance(const QJsonObject& req);
+
+    /**
+     * @brief 处理修改用户信息请求 (Type 10)
+     * @param req 请求 JSON：{"user_id": 123, ...}
+     * @return 响应 JSON
+     */
+    QJsonObject updateUserInfo(const QJsonObject& req);
+    
+    /**
+     * @brief 处理添加用户请求 (Type 11)
+     * @param req 请求 JSON：{"full_name": "姓名", ...}
+     * @return 响应 JSON
+     */
+    QJsonObject createUser(const QJsonObject& req);
+    
+    /**
+     * @brief 处理重置密码请求 (Type 12)
+     * @param req 请求 JSON：{"user_id": 123}
+     * @return 响应 JSON
+     */
+    QJsonObject resetPassword(const QJsonObject& req);
+
+    /**
+     * @brief 修改用户信息 (Type 14)
+     */
+    QJsonObject updateProfile(const QJsonObject& req);
+
+private:
+    AdminService m_service;
+};
+
+#endif // ADMINCONTROLLER_H
+
+
+====================
+FILE: server\controller\transactioncontroller.cpp
+====================
+
+#include "transactioncontroller.h"
+#include "../dao/userdao.h"
+#include <QDebug>
+
+TransactionController::TransactionController(QObject* parent)
+    : QObject(parent)
+    , m_service()
+{
+}
+
+QJsonObject TransactionController::getTransactions(const QString& userId, const QJsonObject& req)
+{
+    // 1. 用户 ID 验证
+    if (userId.isEmpty()) {
+        return errorResponse("无效的用户 ID");
+    }
+
+    // 2. 参数验证
+    int limit;
+    if (!validateLimit(req, limit)) {
+        return errorResponse("limit 参数无效（范围：1-100）");
+    }
+
+    qDebug() << "处理交易历史查询请求: userId =" << userId << ", limit =" << limit;
+
+    // 3. 检查用户是否是管理员
+    UserDAO userDao;
+    QString username, cardNumber;
+    bool isAdmin = false, isApproved = false;
+    bool userExists = userDao.findById(userId.toLongLong(), username, cardNumber, isAdmin, isApproved);
+
+    // 4. 根据用户身份调用不同的 Service 方法
+    QJsonObject res;
+    if (userExists && isAdmin) {
+        // 管理员：查询所有交易记录
+        qDebug() << "管理员查询所有交易记录";
+        res = m_service.getAllTransactions(req);
+    } else {
+        // 普通用户：只查询自己的交易记录
+        res = m_service.getTransactions(userId, req);
+    }
+
+    // 5. 记录结果
+    if (res["status"] == "success") {
+        QJsonArray transactions = res["transactions"].toArray();
+        qDebug() << "交易历史查询成功: userId =" << userId << ", 记录数 =" << transactions.size();
+    } else {
+        qWarning() << "交易历史查询失败: userId =" << userId << ", reason:" << res["msg"].toString();
+    }
+
+    return res;
+}
+
+bool TransactionController::validateLimit(const QJsonObject& req, int& limit)
+{
+    // 默认值
+    limit = 20;
+
+    // 如果请求中包含 limit 参数
+    if (req.contains("limit")) {
+        int requestedLimit = req["limit"].toInt(0);
+
+        // 验证范围
+        if (requestedLimit <= 0 || requestedLimit > 100) {
+            qWarning() << "limit 参数超出范围:" << requestedLimit;
+            return false;
+        }
+
+        limit = requestedLimit;
+    }
+
+    return true;
+}
+
+QJsonObject TransactionController::errorResponse(const QString& msg)
+{
+    return {
+        {"status", "error"},
+        {"msg", msg}
+    };
+}
+
+
+====================
+FILE: server\controller\transactioncontroller.h
+====================
+
+#ifndef TRANSACTIONCONTROLLER_H
+#define TRANSACTIONCONTROLLER_H
+
+#include <QObject>
+#include <QJsonObject>
+#include "../service/transactionservice.h"
+
+/**
+ * @brief 交易控制器 - 处理交易相关的请求
+ *
+ * 职责：
+ * - 参数验证
+ * - 调用 Service 层
+ * - 返回统一格式的 JSON 响应
+ */
+class TransactionController : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit TransactionController(QObject* parent = nullptr);
+    ~TransactionController() = default;
+
+    /**
+     * @brief 处理交易历史查询请求
+     * @param userId 用户 ID
+     * @param req 请求 JSON：
+     *             - "limit": 返回记录数限制 (int, 可选，默认 20)
+     * @return 响应 JSON：
+     *         成功：{
+     *             "status": "success",
+     *             "msg": "查询成功",
+     *             "transactions": [...]
+     *         }
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject getTransactions(const QString& userId, const QJsonObject& req);
+
+private:
+    TransactionService m_service;
+
+    /**
+     * @brief 验证 limit 参数
+     * @param req 请求 JSON
+     * @param limit [out] 返回记录数限制
+     * @return 验证通过返回 true，否则返回 false
+     */
+    bool validateLimit(const QJsonObject& req, int& limit);
+
+    /**
+     * @brief 构造错误响应
+     */
+    QJsonObject errorResponse(const QString& msg);
+};
+
+#endif // TRANSACTIONCONTROLLER_H
+
+
+====================
+FILE: server\controller\usercontroller.cpp
+====================
+
+#include "usercontroller.h"
+#include <QDebug>
+#include <QRegularExpression>
+
+UserController::UserController(QObject* parent)
+    : QObject(parent)
+    , m_service()
+{
+}
+
+QJsonObject UserController::registerUser(const QJsonObject& req)
+{
+    // 1. 参数验证
+    if (!req.contains("username") || !req.contains("password")) {
+        return errorResponse("缺少必要参数：username 或 password");
+    }
+
+    QString username = req["username"].toString();
+    QString password = req["password"].toString();
+
+    // 2. 格式验证
+    if (!validateUsername(username)) {
+        return errorResponse("用户名格式无效（长度 3-20 字符，仅限字母数字下划线）");
+    }
+
+    if (!validatePassword(password)) {
+        return errorResponse("密码格式无效（长度 6-32 字符）");
+    }
+
+    qDebug() << "处理注册请求: username =" << username;
+
+    // 3. 调用 Service 层
+    QJsonObject res = m_service.registerUser(req);
+
+    // 4. 记录结果
+    if (res["status"] == "success") {
+        qDebug() << "注册成功: username =" << username;
+    } else {
+        qWarning() << "注册失败: username =" << username << ", reason:" << res["msg"].toString();
+    }
+
+    return res;
+}
+
+QJsonObject UserController::login(const QJsonObject& req)
+{
+    // 1. 参数验证
+    if (!req.contains("username") || !req.contains("password")) {
+        return errorResponse("缺少必要参数：username 或 password");
+    }
+
+    QString username = req["username"].toString();
+    QString password = req["password"].toString();
+
+    // 2. 格式验证
+    if (!validateUsername(username)) {
+        return errorResponse("用户名格式无效");
+    }
+
+    if (!validatePassword(password)) {
+        return errorResponse("密码格式无效");
+    }
+
+    qDebug() << "处理登录请求: username =" << username;
+
+    // 3. 调用 Service 层
+    QJsonObject res = m_service.login(req);
+
+    // 4. 记录结果
+    if (res["status"] == "success") {
+        qDebug() << "登录成功: username =" << username;
+    } else {
+        qWarning() << "登录失败: username =" << username << ", reason:" << res["msg"].toString();
+    }
+
+    return res;
+}
+
+bool UserController::validateUsername(const QString& username)
+{
+    // 用户名：3-20 字符，仅限字母、数字、下划线
+    if (username.length() < 3 || username.length() > 20) {
+        return false;
+    }
+
+    // 检查是否只包含字母、数字、下划线
+    QRegularExpression regex("^[a-zA-Z0-9_]+$");
+    return regex.match(username).hasMatch();
+}
+
+bool UserController::validatePassword(const QString& password)
+{
+    // 密码：6-32 字符
+    int length = password.length();
+    return length >= 6 && length <= 32;
+}
+
+QJsonObject UserController::errorResponse(const QString& msg)
+{
+    return {
+        {"status", "error"},
+        {"msg", msg}
+    };
+}
+
+QJsonObject UserController::changePassword(const QJsonObject& req)
+{
+    return m_service.changePassword(req);
+}
+
+
+====================
+FILE: server\controller\usercontroller.h
+====================
+
+#ifndef USERCONTROLLER_H
+#define USERCONTROLLER_H
+
+#include <QObject>
+#include <QJsonObject>
+#include "../service/userservice.h"
+
+/**
+ * @brief 用户控制器 - 处理用户相关的 HTTP 请求
+ *
+ * 职责：
+ * - 参数验证
+ * - 调用 Service 层
+ * - 返回统一格式的 JSON 响应
+ */
+class UserController : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit UserController(QObject* parent = nullptr);
+    ~UserController() = default;
+
+    /**
+     * @brief 处理用户注册请求
+     * @param req 请求 JSON：{"username": "xxx", "password": "xxx"}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "注册成功", "user_id": 123}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject registerUser(const QJsonObject& req);
+
+    /**
+     * @brief 处理用户登录请求
+     * @param req 请求 JSON：{"username": "xxx", "password": "xxx"}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "登录成功", "user_id": 123}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject login(const QJsonObject& req);
+    
+    /**
+     * @brief 处理用户修改密码请求 (Type 13)
+     * @param req 请求 JSON：{"user_id": "123", "old_password": "xxx", "new_password": "xxx"}
+     * @return 响应 JSON
+     */
+    QJsonObject changePassword(const QJsonObject& req);
+
+private:
+    UserService m_service;
+
+    /**
+     * @brief 参数验证 - 验证用户名
+     * @param username 用户名
+     * @return 验证通过返回 true，否则返回 false
+     */
+    bool validateUsername(const QString& username);
+
+    /**
+     * @brief 参数验证 - 验证密码
+     * @param password 密码
+     * @return 验证通过返回 true，否则返回 false
+     */
+    bool validatePassword(const QString& password);
+
+    /**
+     * @brief 构造错误响应
+     */
+    QJsonObject errorResponse(const QString& msg);
+};
+
+#endif // USERCONTROLLER_H
+
+
+====================
+FILE: server\dao\accountdao.cpp
+====================
+
+#include "accountdao.h"
+#include "../database.h"
+#include "../snowflake.h"
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QDebug>
+
+AccountDAO::AccountDAO() {}
+
+QSqlDatabase AccountDAO::getDatabase() {
+    return Database::instance().getDatabase();
+}
+
+qint64 AccountDAO::create(qint64 userId, double initialBalance) {
+    qint64 id = Snowflake::instance().nextId();
+    QSqlQuery query(getDatabase());
+    query.prepare("INSERT INTO Account (id, user_id, balance) VALUES (:id, :user_id, :balance)");
+    query.bindValue(":id", id);
+    query.bindValue(":user_id", userId);
+    query.bindValue(":balance", initialBalance);
+
+    if (!query.exec()) {
+        qCritical() << "Failed to create account:" << query.lastError().text();
+        return -1;
+    }
+    return id;
+}
+
+bool AccountDAO::getBalance(qint64 userId, double& balance) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT balance FROM Account WHERE user_id = :user_id");
+    query.bindValue(":user_id", userId);
+    if (query.exec() && query.next()) {
+        balance = query.value(0).toDouble();
+        return true;
+    }
+    return false;
+}
+
+bool AccountDAO::updateBalance(qint64 userId, double delta) {
+    QSqlQuery query(getDatabase());
+    query.prepare("UPDATE Account SET balance = balance + :delta WHERE user_id = :user_id");
+    query.bindValue(":delta", delta);
+    query.bindValue(":user_id", userId);
+    return query.exec();
+}
+
+qint64 AccountDAO::getAccountIdByUserId(qint64 userId) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT id FROM Account WHERE user_id = :user_id");
+    query.bindValue(":user_id", userId);
+    if (query.exec() && query.next()) {
+        return query.value(0).toLongLong();
+    }
+    return -1;
+}
+
+bool AccountDAO::updateBalanceByAccountId(qint64 accountId, double delta) {
+    QSqlQuery query(getDatabase());
+    query.prepare("UPDATE Account SET balance = balance + :delta WHERE id = :id");
+    query.bindValue(":delta", delta);
+    query.bindValue(":id", accountId);
+    return query.exec();
+}
+
+qint64 AccountDAO::getUserIdByAccountId(qint64 accountId) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT user_id FROM Account WHERE id = :id");
+    query.bindValue(":id", accountId);
+    if (query.exec() && query.next()) {
+        return query.value(0).toLongLong();
+    }
+    return -1;
+}
+
+
+====================
+FILE: server\dao\accountdao.h
+====================
+
+#ifndef ACCOUNTDAO_H
+#define ACCOUNTDAO_H
+
+#include <QString>
+#include <QSqlDatabase>
+
+class AccountDAO
+{
+public:
+    AccountDAO();
+    ~AccountDAO() = default;
+
+    /**
+     * @brief 创建账户
+     */
+    qint64 create(qint64 userId, double initialBalance = 0.0);
+
+    /**
+     * @brief 获取用户余额
+     */
+    bool getBalance(qint64 userId, double& balance);
+
+    /**
+     * @brief 更新余额（增减指定金额）
+     */
+    bool updateBalance(qint64 userId, double delta);
+
+    /**
+     * @brief 根据 user_id 获取 account_id
+     */
+    qint64 getAccountIdByUserId(qint64 userId);
+
+    /**
+     * @brief 根据 account_id 更新余额
+     */
+    bool updateBalanceByAccountId(qint64 accountId, double delta);
+
+    /**
+     * @brief 根据 account_id 获取 user_id
+     */
+    qint64 getUserIdByAccountId(qint64 accountId);
+
+private:
+    QSqlDatabase getDatabase();
+};
+
+#endif // ACCOUNTDAO_H
+
+
+====================
+FILE: server\dao\transactiondao.cpp
+====================
+
+#include "transactiondao.h"
+#include "../database.h"
+#include "../snowflake.h"
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QDebug>
+
+TransactionDAO::TransactionDAO() {}
+
+QSqlDatabase TransactionDAO::getDatabase() {
+    return Database::instance().getDatabase();
+}
+
+qint64 TransactionDAO::insert(qint64 fromAccount, qint64 toAccount, double amount, const QString& type, const QString& remark) {
+    qint64 id = Snowflake::instance().nextId();
+    QSqlQuery query(getDatabase());
+    query.prepare("INSERT INTO Transaction (id, from_account_id, to_account_id, amount, type, remark) "
+                  "VALUES (:id, :from, :to, :amount, :type, :remark)");
+    query.bindValue(":id", id);
+    query.bindValue(":from", fromAccount > 0 ? QVariant(fromAccount) : QVariant(QVariant::LongLong));
+    query.bindValue(":to", toAccount > 0 ? QVariant(toAccount) : QVariant(QVariant::LongLong));
+    query.bindValue(":amount", amount);
+    query.bindValue(":type", type);
+    query.bindValue(":remark", remark);
+
+    if (!query.exec()) {
+        qCritical() << "Failed to insert transaction:" << query.lastError().text();
+        return -1;
+    }
+    return id;
+}
+
+QList<QVariantMap> TransactionDAO::findByUserId(qint64 userId, int limit) {
+    QList<QVariantMap> txns;
+    QSqlQuery query(getDatabase());
+    // 查询该用户账户相关的转出和转入
+    query.prepare(R"(
+        SELECT t.id, t.from_account_id, t.to_account_id, t.amount, t.type, t.remark, t.timestamp
+        FROM Transaction t
+        JOIN Account a ON (t.from_account_id = a.id OR t.to_account_id = a.id)
+        WHERE a.user_id = :user_id
+        ORDER BY t.timestamp DESC
+        LIMIT :limit
+    )");
+    query.bindValue(":user_id", userId);
+    query.bindValue(":limit", limit);
+
+    if (query.exec()) {
+        while (query.next()) {
+            QVariantMap m;
+            m["id"] = QString::number(query.value(0).toLongLong());
+            m["from_account"] = query.value(1).isNull() ? "" : QString::number(query.value(1).toLongLong());
+            m["to_account"] = query.value(2).isNull() ? "" : QString::number(query.value(2).toLongLong());
+            m["amount"] = query.value(3).toDouble();
+            m["type"] = query.value(4).toString();
+            m["remark"] = query.value(5).toString();
+            m["timestamp"] = query.value(6).toDateTime().toString("yyyy-MM-dd HH:mm:ss");
+            txns.append(m);
+        }
+    }
+    return txns;
+}
+
+QList<QVariantMap> TransactionDAO::findAll(int limit) {
+    QList<QVariantMap> txns;
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT id, from_account_id, to_account_id, amount, type, remark, timestamp "
+                  "FROM Transaction ORDER BY timestamp DESC LIMIT :limit");
+    query.bindValue(":limit", limit);
+
+    if (query.exec()) {
+        while (query.next()) {
+            QVariantMap m;
+            m["id"] = QString::number(query.value(0).toLongLong());
+            m["from_account"] = query.value(1).isNull() ? "" : QString::number(query.value(1).toLongLong());
+            m["to_account"] = query.value(2).isNull() ? "" : QString::number(query.value(2).toLongLong());
+            m["amount"] = query.value(3).toDouble();
+            m["type"] = query.value(4).toString();
+            m["remark"] = query.value(5).toString();
+            m["timestamp"] = query.value(6).toDateTime().toString("yyyy-MM-dd HH:mm:ss");
+            txns.append(m);
+        }
+    }
+    return txns;
+}
+
+
+====================
+FILE: server\dao\transactiondao.h
+====================
+
+#ifndef TRANSACTIONDAO_H
+#define TRANSACTIONDAO_H
+
+#include <QList>
+#include <QVariantMap>
+#include <QSqlDatabase>
+
+class TransactionDAO
+{
+public:
+    TransactionDAO();
+    ~TransactionDAO() = default;
+
+    /**
+     * @brief 插入交易记录
+     */
+    qint64 insert(qint64 fromAccount, qint64 toAccount, double amount, const QString& type, const QString& remark = "");
+
+    /**
+     * @brief 查询用户的交易历史
+     */
+    QList<QVariantMap> findByUserId(qint64 userId, int limit = 20);
+
+    /**
+     * @brief 查询所有交易记录（管理员用）
+     */
+    QList<QVariantMap> findAll(int limit = 100);
+
+private:
+    QSqlDatabase getDatabase();
+};
+
+#endif // TRANSACTIONDAO_H
+
+
+====================
+FILE: server\dao\userdao.cpp
+====================
+
+#include "userdao.h"
+#include "../database.h"
+#include "../snowflake.h"
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QDebug>
+#include <QUuid>
+
+UserDAO::UserDAO() {}
+
+QSqlDatabase UserDAO::getDatabase() {
+    return Database::instance().getDatabase();
+}
+
+QString UserDAO::insert(const QString& username, const QString& passwordHash, const QString& salt,
+                        bool isAdmin, bool isApproved) {
+    qint64 id = Snowflake::instance().nextId();
+    QString cardNumber = Database::instance().generateCardNumber();
+
+    QSqlQuery query(getDatabase());
+    query.prepare("INSERT INTO User (id, card_number, username, password_hash, salt, is_admin, is_approved) "
+                  "VALUES (:id, :card, :name, :hash, :salt, :admin, :approved)");
+    query.bindValue(":id", id);
+    query.bindValue(":card", cardNumber);
+    query.bindValue(":name", username);
+    query.bindValue(":hash", passwordHash);
+    query.bindValue(":salt", salt);
+    query.bindValue(":admin", isAdmin ? 1 : 0);
+    query.bindValue(":approved", isApproved ? 1 : 0);
+
+    if (!query.exec()) {
+        qCritical() << "Failed to insert user:" << query.lastError().text();
+        return QString();
+    }
+    return cardNumber;
+}
+
+QString UserDAO::insertWithDetails(const QString& fullName, const QString& idCard, const QString& phone,
+                                   const QString& birthDate, const QString& address,
+                                   const QString& passwordHash, const QString& salt) {
+    qint64 id = Snowflake::instance().nextId();
+    QString cardNumber = Database::instance().generateCardNumber();
+    // 生成用户名：使用卡号后8位
+    QString username = cardNumber.right(8);  // 简单使用卡号后8位作为用户名
+
+    QSqlQuery query(getDatabase());
+    query.prepare("INSERT INTO User (id, card_number, username, password_hash, salt, is_admin, is_approved, "
+                  "full_name, id_card, phone, birth_date, address) "
+                  "VALUES (:id, :card, :name, :hash, :salt, 0, 1, :fullname, :idcard, :phone, :birth, :addr)");
+    query.bindValue(":id", id);
+    query.bindValue(":card", cardNumber);
+    query.bindValue(":name", username);
+    query.bindValue(":hash", passwordHash);
+    query.bindValue(":salt", salt);
+    query.bindValue(":fullname", fullName);
+    query.bindValue(":idcard", idCard);
+    query.bindValue(":phone", phone);
+    query.bindValue(":birth", birthDate);
+    query.bindValue(":addr", address);
+
+    if (!query.exec()) {
+        qCritical() << "Failed to insert user with details:" << query.lastError().text();
+        return QString();
+    }
+    return cardNumber;
+}
+
+bool UserDAO::findByUsername(const QString& username, qint64& id, QString& cardNumber, QString& passwordHash, QString& salt,
+                            bool* isAdmin, bool* isApproved, QString* fullName, QString* phone, QString* idCard, QString* birthDate) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT id, card_number, password_hash, salt, is_admin, is_approved, full_name, phone, id_card, birth_date FROM User WHERE username = :name");
+    query.bindValue(":name", username);
+
+    if (query.exec() && query.next()) {
+        id = query.value(0).toLongLong();
+        cardNumber = query.value(1).toString();
+        passwordHash = query.value(2).toString();
+        salt = query.value(3).toString();
+        if (isAdmin) *isAdmin = query.value(4).toBool();
+        if (isApproved) *isApproved = query.value(5).toBool();
+        if (fullName) *fullName = query.value(6).toString();
+        if (phone) *phone = query.value(7).toString();
+        if (idCard) *idCard = query.value(8).toString();
+        if (birthDate) *birthDate = query.value(9).toString();
+        return true;
+    }
+    return false;
+}
+
+bool UserDAO::findByCardNumber(const QString& cardNumber, qint64& id, QString& username, QString& passwordHash, QString& salt,
+                              bool* isAdmin, bool* isApproved, QString* fullName, QString* phone, QString* idCard, QString* birthDate) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT id, username, password_hash, salt, is_admin, is_approved, full_name, phone, id_card, birth_date FROM User WHERE card_number = :card");
+    query.bindValue(":card", cardNumber);
+
+    if (query.exec() && query.next()) {
+        id = query.value(0).toLongLong();
+        username = query.value(1).toString();
+        passwordHash = query.value(2).toString();
+        salt = query.value(3).toString();
+        if (isAdmin) *isAdmin = query.value(4).toBool();
+        if (isApproved) *isApproved = query.value(5).toBool();
+        if (fullName) *fullName = query.value(6).toString();
+        if (phone) *phone = query.value(7).toString();
+        if (idCard) *idCard = query.value(8).toString();
+        if (birthDate) *birthDate = query.value(9).toString();
+        return true;
+    }
+    return false;
+}
+
+bool UserDAO::exists(const QString& username) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT COUNT(*) FROM User WHERE username = :name");
+    query.bindValue(":name", username);
+    return query.exec() && query.next() && query.value(0).toInt() > 0;
+}
+
+bool UserDAO::findById(qint64 id, QString& username, QString& cardNumber, bool& isAdmin, bool& isApproved) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT username, card_number, is_admin, is_approved FROM User WHERE id = :id");
+    query.bindValue(":id", id);
+    if (query.exec() && query.next()) {
+        username = query.value(0).toString();
+        cardNumber = query.value(1).toString();
+        isAdmin = query.value(2).toBool();
+        isApproved = query.value(3).toBool();
+        return true;
+    }
+    return false;
+}
+
+bool UserDAO::findIdByCardOrUsername(const QString& val, qint64& id) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT id FROM User WHERE card_number = :val OR username = :val");
+    query.bindValue(":val", val);
+    if (query.exec() && query.next()) {
+        id = query.value(0).toLongLong();
+        return true;
+    }
+    return false;
+}
+
+bool UserDAO::isAdmin(qint64 id) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT is_admin FROM User WHERE id = :id");
+    query.bindValue(":id", id);
+    return query.exec() && query.next() && query.value(0).toBool();
+}
+
+bool UserDAO::isApproved(qint64 id) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT is_approved FROM User WHERE id = :id");
+    query.bindValue(":id", id);
+    return query.exec() && query.next() && query.value(0).toBool();
+}
+
+bool UserDAO::setAdmin(qint64 id, bool isAdmin) {
+    QSqlQuery query(getDatabase());
+    query.prepare("UPDATE User SET is_admin = :admin WHERE id = :id");
+    query.bindValue(":admin", isAdmin ? 1 : 0);
+    query.bindValue(":id", id);
+    return query.exec();
+}
+
+bool UserDAO::setApproved(qint64 id, bool isApproved) {
+    QSqlQuery query(getDatabase());
+    query.prepare("UPDATE User SET is_approved = :approved WHERE id = :id");
+    query.bindValue(":approved", isApproved ? 1 : 0);
+    query.bindValue(":id", id);
+    return query.exec();
+}
+
+QList<QVariantMap> UserDAO::getPendingUsers() {
+    QList<QVariantMap> users;
+    QSqlQuery query(getDatabase());
+    query.exec("SELECT id, card_number, username, created_at FROM User WHERE is_approved = 0 ORDER BY created_at ASC");
+    while (query.next()) {
+        QVariantMap u;
+        u["id"] = QString::number(query.value(0).toLongLong());
+        u["card_number"] = query.value(1).toString();
+        u["username"] = query.value(2).toString();
+        u["created_at"] = query.value(3).toString();
+        users.append(u);
+    }
+    return users;
+}
+
+QList<QVariantMap> UserDAO::getAllUsers() {
+    QList<QVariantMap> users;
+    QSqlQuery query(getDatabase());
+    query.exec("SELECT u.id, u.card_number, u.username, u.full_name, u.is_admin, u.is_approved, u.created_at, a.balance, "
+               "u.phone, u.id_card, u.birth_date "
+               "FROM User u LEFT JOIN Account a ON u.id = a.user_id ORDER BY u.created_at ASC");
+    while (query.next()) {
+        QVariantMap u;
+        u["id"] = QString::number(query.value(0).toLongLong());
+        u["card_number"] = query.value(1).toString();
+        u["username"] = query.value(2).toString();
+        u["full_name"] = query.value(3).toString();
+        u["is_admin"] = query.value(4).toBool();
+        u["is_approved"] = query.value(5).toBool();
+        u["created_at"] = query.value(6).toString();
+        u["balance"] = query.value(7).toDouble();
+        u["phone"] = query.value(8).toString();
+        u["id_card"] = query.value(9).toString();
+        u["birth_date"] = query.value(10).toString();
+        users.append(u);
+    }
+    return users;
+}
+
+bool UserDAO::updateUserInfo(qint64 id, const QString& newUsername, int isAdmin, int isApproved) {
+    QString sql = "UPDATE User SET id=id";
+    if (!newUsername.isEmpty()) sql += ", username = :name";
+    if (isAdmin != -1) sql += ", is_admin = :admin";
+    if (isApproved != -1) sql += ", is_approved = :approved";
+    sql += " WHERE id = :id";
+
+    QSqlQuery query(getDatabase());
+    query.prepare(sql);
+    if (!newUsername.isEmpty()) query.bindValue(":name", newUsername);
+    if (isAdmin != -1) query.bindValue(":admin", isAdmin);
+    if (isApproved != -1) query.bindValue(":approved", isApproved);
+    query.bindValue(":id", id);
+    return query.exec();
+}
+
+bool UserDAO::updateUserProfile(qint64 id, const QString& fullName, const QString& idCard, const QString& phone, const QString& birthDate) {
+    QSqlQuery query(getDatabase());
+    query.prepare("UPDATE User SET full_name = :fullname, id_card = :idcard, phone = :phone, birth_date = :birth WHERE id = :id");
+    query.bindValue(":fullname", fullName);
+    query.bindValue(":idcard", idCard);
+    query.bindValue(":phone", phone);
+    query.bindValue(":birth", birthDate);
+    query.bindValue(":id", id);
+    return query.exec();
+}
+
+bool UserDAO::updatePassword(qint64 id, const QString& newPasswordHash, const QString& newSalt) {
+    QSqlQuery query(getDatabase());
+    query.prepare("UPDATE User SET password_hash = :hash, salt = :salt WHERE id = :id");
+    query.bindValue(":hash", newPasswordHash);
+    query.bindValue(":salt", newSalt);
+    query.bindValue(":id", id);
+    return query.exec();
+}
+
+bool UserDAO::getPasswordInfo(qint64 id, QString& passwordHash, QString& salt) {
+    QSqlQuery query(getDatabase());
+    query.prepare("SELECT password_hash, salt FROM User WHERE id = :id");
+    query.bindValue(":id", id);
+    if (query.exec() && query.next()) {
+        passwordHash = query.value(0).toString();
+        salt = query.value(1).toString();
+        return true;
+    }
+    return false;
+}
+
+
+====================
+FILE: server\dao\userdao.h
+====================
+
+#ifndef USERDAO_H
+#define USERDAO_H
+
+#include <QString>
+#include <QVariantMap>
+#include <QSqlDatabase>
+#include <QList>
+
+class UserDAO
+{
+public:
+    UserDAO();
+    ~UserDAO() = default;
+
+    /**
+     * @brief 插入新用户
+     * @return 成功返回新用户的 16 位卡号，失败返回空字符串
+     */
+    QString insert(const QString& username, const QString& passwordHash, const QString& salt,
+                   bool isAdmin = false, bool isApproved = false);
+    
+    /**
+     * @brief 插入新用户（带完整信息）
+     * @return 成功返回新用户的 16 位卡号，失败返回空字符串
+     */
+    QString insertWithDetails(const QString& fullName, const QString& idCard, const QString& phone,
+                              const QString& birthDate, const QString& address,
+                              const QString& passwordHash, const QString& salt);
+
+    /**
+     * @brief 根据用户名查询用户信息
+     */
+    bool findByUsername(const QString& username, qint64& id, QString& cardNumber, QString& passwordHash, QString& salt,
+                       bool* isAdmin = nullptr, bool* isApproved = nullptr, QString* fullName = nullptr,
+                       QString* phone = nullptr, QString* idCard = nullptr, QString* birthDate = nullptr);
+
+    /**
+     * @brief 根据卡号查询用户信息
+     */
+    bool findByCardNumber(const QString& cardNumber, qint64& id, QString& username, QString& passwordHash, QString& salt,
+                          bool* isAdmin = nullptr, bool* isApproved = nullptr, QString* fullName = nullptr,
+                          QString* phone = nullptr, QString* idCard = nullptr, QString* birthDate = nullptr);
+
+    /**
+     * @brief 检查用户名是否存在
+     */
+    bool exists(const QString& username);
+
+    /**
+     * @brief 根据用户ID查询用户信息
+     */
+    bool findById(qint64 id, QString& username, QString& cardNumber, bool& isAdmin, bool& isApproved);
+
+    /**
+     * @brief 根据卡号或用户名查询用户内部ID
+     */
+    bool findIdByCardOrUsername(const QString& val, qint64& id);
+
+    bool isAdmin(qint64 id);
+    bool isApproved(qint64 id);
+    bool setAdmin(qint64 id, bool isAdmin);
+    bool setApproved(qint64 id, bool isApproved);
+
+    QList<QVariantMap> getPendingUsers();
+    QList<QVariantMap> getAllUsers();
+
+    bool updateUserInfo(qint64 id, const QString& newUsername = QString(),
+                       int isAdmin = -1, int isApproved = -1);
+    
+    /**
+     * @brief 用户修改个人信息
+     */
+    bool updateUserProfile(qint64 id, const QString& fullName, const QString& idCard, 
+                           const QString& phone, const QString& birthDate);
+    
+    /**
+     * @brief 更新用户密码
+     */
+    bool updatePassword(qint64 id, const QString& newPasswordHash, const QString& newSalt);
+    
+    /**
+     * @brief 获取用户密码哈希和盐（用于验证旧密码）
+     */
+    bool getPasswordInfo(qint64 id, QString& passwordHash, QString& salt);
+
+private:
+    QSqlDatabase getDatabase();
+};
+
+#endif // USERDAO_H
+
+
+====================
+FILE: server\service\accountservice.cpp
+====================
+
+#include "accountservice.h"
+#include <QDebug>
+#include <QSqlError>
+#include <QJsonArray>
+#include "../database.h"
+
+AccountService::AccountService(QObject* parent)
+    : QObject(parent)
+    , m_accountDao()
+    , m_txnDao()
+{
+}
+
+QJsonObject AccountService::getBalance(const QString& userIdStr)
+{
+    qint64 userId = userIdStr.toLongLong();
+    double balance;
+    if (!m_accountDao.getBalance(userId, balance)) {
+        return errorResponse("余额查询失败");
+    }
+
+    return successResponse("查询成功", {{"balance", balance}});
+}
+
+QJsonObject AccountService::transfer(const QString& fromUserIdStr, const QJsonObject& req)
+{
+    qint64 fromUserId = fromUserIdStr.toLongLong();
+    if (!req.contains("amount")) {
+        return errorResponse("缺少必要参数：amount");
+    }
+
+    double amount = req["amount"].toDouble();
+    QString targetName = req["to_name"].toString().trimmed();
+    UserDAO userDao;
+    
+    qint64 toUserId = 0;
+    QString dummyUsername, dummyHash, dummySalt, actualFullName;
+    
+    if (req.contains("to_account")) { // 这里前端传的是卡号
+        userDao.findByCardNumber(req["to_account"].toString(), toUserId, dummyUsername, dummyHash, dummySalt, nullptr, nullptr, &actualFullName);
+    }
+
+    if (toUserId == 0) {
+        return transferErrorResponse("目标卡号不存在", amount);
+    }
+
+    if (!targetName.isEmpty() && actualFullName != targetName) {
+        return transferErrorResponse("目标卡号与姓名不匹配", amount);
+    }
+
+    if (toUserId == fromUserId) {
+        return transferErrorResponse("不能转账给自己", amount);
+    }
+
+    if (userDao.isAdmin(toUserId)) {
+        return transferErrorResponse("不能转账给管理员", amount);
+    }
+
+    qint64 toAccountId = m_accountDao.getAccountIdByUserId(toUserId);
+    qint64 fromAccountId = m_accountDao.getAccountIdByUserId(fromUserId);
+
+    if (toAccountId < 0 || fromAccountId < 0) {
+        return transferErrorResponse("账户不存在", amount);
+    }
+
+    QSqlDatabase db = Database::instance().getDatabase();
+    if (!db.transaction()) {
+        return transferErrorResponse("系统错误：事务失败", amount);
+    }
+
+    try {
+        double fromBalance;
+        
+        if (!m_accountDao.getBalance(fromUserId, fromBalance)) {
+            db.rollback();
+            return transferErrorResponse("账户查询失败", amount);
+        }
+
+        if (fromBalance < amount) {
+            db.rollback();
+            return transferErrorResponse("余额不足", amount);
+        }
+
+        if (!m_accountDao.updateBalance(fromUserId, -amount) ||
+            !m_accountDao.updateBalanceByAccountId(toAccountId, amount)) {
+            db.rollback();
+            return transferErrorResponse("转账失败", amount);
+        }
+
+        if (m_txnDao.insert(fromAccountId, toAccountId, amount, "transfer", req.value("remark").toString()) < 0) {
+            db.rollback();
+            return transferErrorResponse("记录交易失败", amount);
+        }
+
+        if (!db.commit()) {
+            return transferErrorResponse("系统错误：提交失败", amount);
+        }
+
+        double newBalance;
+        m_accountDao.getBalance(fromUserId, newBalance);
+        return successResponse("转账成功", {{"new_balance", newBalance}});
+
+    } catch (const std::exception& e) {
+        db.rollback();
+        qCritical() << "Transfer exception:" << e.what();
+        return transferErrorResponse("转账异常", amount);
+    } catch (...) {
+        db.rollback();
+        return transferErrorResponse("未知转账异常", amount);
+    }
+}
+
+QJsonObject AccountService::errorResponse(const QString& msg)
+{
+    return {{"status", "error"}, {"msg", msg}};
+}
+
+QJsonObject AccountService::transferErrorResponse(const QString& msg, double amount)
+{
+    return {{"status", "error"}, {"msg", msg}, {"amount", amount}};
+}
+
+QJsonObject AccountService::successResponse(const QString& msg, const QJsonObject& data)
+{
+    QJsonObject result = {{"status", "success"}, {"msg", msg}};
+    for (auto it = data.begin(); it != data.end(); ++it) {
+        result[it.key()] = it.value();
+    }
+    return result;
+}
+
+qint64 AccountService::getAccountIdByUserId(const QString& userIdStr)
+{
+    return m_accountDao.getAccountIdByUserId(userIdStr.toLongLong());
+}
+
+
+====================
+FILE: server\service\accountservice.h
+====================
+
+#ifndef ACCOUNTSERVICE_H
+#define ACCOUNTSERVICE_H
+
+#include <QObject>
+#include <QJsonObject>
+#include <QSqlDatabase>
+#include "../dao/accountdao.h"
+#include "../dao/transactiondao.h"
+#include "../dao/userdao.h"
+#include "../database.h"
+
+/**
+ * @brief 账户服务层 - 处理账户相关的业务逻辑
+ *
+ * 职责：
+ * - 查询账户余额
+ * - 转账事务（原子性保证）
+ */
+class AccountService : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit AccountService(QObject* parent = nullptr);
+    ~AccountService() = default;
+
+    /**
+     * @brief 查询余额
+     * @param userId 用户 ID（UUID）
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "查询成功", "balance": 1000.00}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject getBalance(const QString& userId);
+
+    /**
+     * @brief 转账
+     * @param fromUserId 转出用户 ID（UUID）
+     * @param req 请求 JSON：
+     *             - "to_username": 目标用户名 (QString，与to_userid二选一)
+     *             - "to_userid": 目标6位数字用户ID (QString，与to_username二选一)
+     *             - "amount": 转账金额 (double)
+     *             - "remark": 备注 (QString, 可选)
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "转账成功", "new_balance": 900.00}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     *
+     * @note 转账使用 SQLite 事务保证原子性：
+     *       BEGIN → 检查余额 → 扣款 → 加款 → 记录 → COMMIT
+     *       任何步骤失败都会 ROLLBACK
+     *
+     * @note 用户通过 userid（6位数字）或 username（用户名）进行转账
+     */
+    QJsonObject transfer(const QString& fromUserId, const QJsonObject& req);
+
+    /**
+     * @brief 根据用户 ID 获取账户 ID
+     * @param userId 用户 ID（UUID）
+     * @return 成功返回 account_id，失败返回 -1
+     */
+    qint64 getAccountIdByUserId(const QString& userId);
+
+private:
+    AccountDAO m_accountDao;
+    TransactionDAO m_txnDao;
+
+    /**
+     * @brief 构造错误响应
+     */
+    QJsonObject errorResponse(const QString& msg);
+
+    /**
+     * @brief 构造转账错误响应（包含amount字段，用于客户端识别）
+     */
+    QJsonObject transferErrorResponse(const QString& msg, double amount);
+
+    /**
+     * @brief 构造成功响应
+     */
+    QJsonObject successResponse(const QString& msg, const QJsonObject& data = QJsonObject());
+};
+
+#endif // ACCOUNTSERVICE_H
+
+
+====================
+FILE: server\service\adminservice.cpp
+====================
+
+#include "adminservice.h"
+#include <QDebug>
+#include <QJsonArray>
+#include <QRandomGenerator>
+#include <QCryptographicHash>
+#include "../database.h"
+#include <QSqlError>
+
+
+AdminService::AdminService(QObject* parent)
+    : QObject(parent)
+    , m_userDao()
+    , m_accountDao()
+{
+}
+
+QJsonObject AdminService::approveUser(const QJsonObject& req)
+{
+    if (!req.contains("user_id") || !req.contains("approve")) {
+        return {{"status", "error"}, {"msg", "缺少必要参数"}};
+    }
+
+    qint64 userId = req["user_id"].toString().toLongLong();
+    bool approve = req["approve"].toBool();
+
+    QString username, cardNumber;
+    bool isAdmin, isApproved;
+
+    if (!m_userDao.findById(userId, username, cardNumber, isAdmin, isApproved)) {
+        return {{"status", "error"}, {"msg", "用户不存在"}};
+    }
+
+    if (!m_userDao.setApproved(userId, approve)) {
+        return {{"status", "error"}, {"msg", "更新失败"}};
+    }
+
+    return {{"status", "success"}, {"msg", "操作成功"}};
+}
+
+QJsonObject AdminService::getPendingUsers(const QJsonObject& req)
+{
+    Q_UNUSED(req);
+    QList<QVariantMap> users = m_userDao.getPendingUsers();
+    QJsonArray usersArray;
+    for (const QVariantMap& user : users) {
+        QJsonObject obj;
+        obj["id"] = user["id"].toString();
+        obj["card_number"] = user["card_number"].toString();
+        obj["username"] = user["username"].toString();
+        obj["created_at"] = user["created_at"].toString();
+        usersArray.append(obj);
+    }
+    return {{"status", "success"}, {"users", usersArray}};
+}
+
+QJsonObject AdminService::getAllUsers(const QJsonObject& req)
+{
+    Q_UNUSED(req);
+    QList<QVariantMap> users = m_userDao.getAllUsers();
+    QJsonArray usersArray;
+    for (const QVariantMap& user : users) {
+        QJsonObject obj;
+        obj["id"] = user["id"].toString();
+        obj["card_number"] = user["card_number"].toString();
+        obj["username"] = user["username"].toString();
+        obj["full_name"] = user["full_name"].toString();
+        obj["phone"] = user["phone"].toString();
+        obj["id_card"] = user["id_card"].toString();
+        obj["birth_date"] = user["birth_date"].toString();
+        obj["balance"] = user["balance"].toDouble();
+        obj["is_admin"] = user["is_admin"].toBool();
+        obj["is_approved"] = user["is_approved"].toBool();
+        obj["created_at"] = user["created_at"].toString();
+        usersArray.append(obj);
+    }
+    return {{"status", "success"}, {"users", usersArray}};
+}
+
+QJsonObject AdminService::setUserBalance(const QJsonObject& req)
+{
+    if (!req.contains("user_id") || !req.contains("new_balance")) {
+        return {{"status", "error"}, {"msg", "缺少必要参数"}};
+    }
+
+    qint64 userId = req["user_id"].toString().toLongLong();
+    double newBalance = req["new_balance"].toDouble();
+
+    double currentBalance;
+    if (!m_accountDao.getBalance(userId, currentBalance)) {
+        return {{"status", "error"}, {"msg", "账户查询失败"}};
+    }
+
+    if (!m_accountDao.updateBalance(userId, newBalance - currentBalance)) {
+        return {{"status", "error"}, {"msg", "更新失败"}};
+    }
+
+    return {{"status", "success"}, {"msg", "余额已修改"}};
+}
+
+QJsonObject AdminService::updateUserInfo(const QJsonObject& req)
+{
+    if (!req.contains("user_id")) {
+        return {{"status", "error"}, {"msg", "缺少必要参数"}};
+    }
+
+    qint64 userId = req["user_id"].toString().toLongLong();
+    QString newUsername = req.value("username").toString();
+    int isAdmin = req.contains("is_admin") ? (req["is_admin"].toBool() ? 1 : 0) : -1;
+    int isApproved = req.contains("is_approved") ? (req["is_approved"].toBool() ? 1 : 0) : -1;
+
+    if (!m_userDao.updateUserInfo(userId, newUsername, isAdmin, isApproved)) {
+        return {{"status", "error"}, {"msg", "更新失败"}};
+    }
+
+    return {{"status", "success"}, {"msg", "信息已更新"}};
+}
+
+QJsonObject AdminService::createUser(const QJsonObject& req)
+{
+    if (!req.contains("full_name") || !req.contains("id_card") || 
+        !req.contains("phone") || !req.contains("birth_date") || !req.contains("address")) {
+        return {{"status", "error"}, {"msg", "缺少必要参数"}};
+    }
+
+    QString fullName = req["full_name"].toString();
+    QString idCard = req["id_card"].toString();
+    QString phone = req["phone"].toString();
+    QString birthDate = req["birth_date"].toString();
+    QString address = req["address"].toString();
+
+    // 生成随机6位数字密码
+    QString password = QString::number(QRandomGenerator::global()->bounded(100000, 1000000));
+    
+    // 生成盐和密码哈希
+    QByteArray saltBytes;
+    for (int i = 0; i < 16; i++) {  //生成16位随机数盐值
+        saltBytes.append(static_cast<char>(QRandomGenerator::global()->bounded(256)));
+    }
+    QString salt = saltBytes.toHex();
+    qDebug() << "Generated salt for new user:" << salt << "length:" << salt.length();
+    
+    QString passwordHash = QCryptographicHash::hash((password + salt).toUtf8(), QCryptographicHash::Sha256).toHex();
+
+    // 插入用户和获取获取用户ID并创建账户应该处于事务当中  
+
+    QSqlDatabase db = Database::instance().getDatabase();
+    if(!db.transaction()){
+        return {{"status", "error"}, {"msg", "系统错误：事务失败"}};
+    }
+    try {
+        // Transaction operations will go here
+        QString cardNumber = m_userDao.insertWithDetails(fullName, idCard, phone, birthDate, address, passwordHash, salt);
+        if (cardNumber.isEmpty()) {
+            db.rollback();
+            return {{"status", "error"}, {"msg", "用户创建失败"}};
+        }
+        qint64 userId;
+        if(!m_userDao.findIdByCardOrUsername(cardNumber, userId)){
+            db.rollback();
+            return {{"status", "error"}, {"msg", "无法检索新生成的 ID"}};
+        }
+        // throw std::runtime_error("Failed to retrieve new user ID"); 破坏性实验
+        if (m_accountDao.create(userId, 0.0) == -1) {
+            db.rollback();
+            return {{"status", "error"}, {"msg", "账户创建失败"}};
+        }
+         // 初始余额为0
+        if (!db.commit()) {
+            db.rollback();
+            return {{"status", "error"}, {"msg", "系统错误：提交失败"}};
+        }
+
+        return {
+        {"status", "success"},
+        {"msg", "用户创建成功"},
+        {"card_number", cardNumber},
+        {"password", password}
+        };
+    } catch (const std::exception& e) {
+        db.rollback();
+        qCritical() << "Transfer exception:" << e.what();
+        return {{"status", "error"}, {"msg", "系统内部错误"}};
+    } catch (...) {
+        db.rollback();
+        return {{"status", "error"}, {"msg", "未知严重错误"}};
+    }
+    
+}
+
+QJsonObject AdminService::resetPassword(const QJsonObject& req)
+{
+    if (!req.contains("user_id")) {
+        return {{"status", "error"}, {"msg", "缺少必要参数"}};
+    }
+
+    qint64 userId = req["user_id"].toString().toLongLong();
+    QString newPassword;
+
+    if (req.contains("new_password")) {
+        newPassword = req["new_password"].toString();
+        if (newPassword.length() != 6) {
+            return {{"status", "error"}, {"msg", "密码必须为6位数字"}};
+        }
+    } else {
+        // 生成随机6位数字密码
+        newPassword = QString::number(QRandomGenerator::global()->bounded(100000, 1000000));
+    }
+    
+    // 生成新盐和密码哈希
+    QByteArray saltBytes;
+    for (int i = 0; i < 16; i++) {
+        saltBytes.append(static_cast<char>(QRandomGenerator::global()->bounded(256)));
+    }
+    QString newSalt = saltBytes.toHex();
+    
+    QString newPasswordHash = QCryptographicHash::hash((newPassword + newSalt).toUtf8(), QCryptographicHash::Sha256).toHex();
+
+    if (!m_userDao.updatePassword(userId, newPasswordHash, newSalt)) {
+        return {{"status", "error"}, {"msg", "密码修改失败"}};
+    }
+
+    return {
+        {"status", "success"},
+        {"msg", req.contains("new_password") ? "密码已修改" : "密码已重置"},
+        {"password", newPassword}
+    };
+}
+
+QJsonObject AdminService::updateProfile(const QJsonObject& req)
+{
+    if (!req.contains("user_id") || !req.contains("full_name") || 
+        !req.contains("id_card") || !req.contains("phone") || !req.contains("birth_date")) {
+        return {{"status", "error"}, {"msg", "缺少必要参数"}};
+    }
+
+    qint64 userId = req["user_id"].toString().toLongLong();
+    QString fullName = req["full_name"].toString();
+    QString idCard = req["id_card"].toString();
+    QString phone = req["phone"].toString();
+    QString birthDate = req["birth_date"].toString();
+
+    if (fullName.isEmpty() || idCard.isEmpty() || phone.isEmpty() || birthDate.isEmpty()) {
+        return {{"status", "error"}, {"msg", "所有字段都不能为空"}};
+    }
+
+    if (!m_userDao.updateUserProfile(userId, fullName, idCard, phone, birthDate)) {
+        return {{"status", "error"}, {"msg", "修改个人信息失败"}};
+    }
+
+    return {
+        {"status", "success"}, 
+        {"msg", "个人信息修改成功"},
+        {"full_name", fullName},
+        {"id_card", idCard},
+        {"phone", phone},
+        {"birth_date", birthDate}
+    };
+}
+
+
+====================
+FILE: server\service\adminservice.h
+====================
+
+#ifndef ADMINSERVICE_H
+#define ADMINSERVICE_H
+
+#include <QObject>
+#include <QJsonObject>
+#include "../dao/userdao.h"
+#include "../dao/accountdao.h"
+#include <QSqlDatabase>
+
+/**
+ * @brief 管理员服务层 - 处理管理员相关的业务逻辑
+ *
+ * 职责：
+ * - 审批用户注册
+ * - 查询所有用户信息
+ * - 修改用户余额
+ * - 修改用户信息
+ */
+class AdminService : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit AdminService(QObject* parent = nullptr);
+    ~AdminService() = default;
+
+    /**
+     * @brief 审批用户注册
+     * @param req 请求 JSON：{"user_id": 123, "approve": true/false}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "用户已批准/拒绝"}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject approveUser(const QJsonObject& req);
+
+    /**
+     * @brief 获取待审批用户列表
+     * @param req 请求 JSON：{}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "users": [{user_id, username, created_at}, ...]}
+     */
+    QJsonObject getPendingUsers(const QJsonObject& req);
+
+    /**
+     * @brief 获取所有用户信息（管理员查询用）
+     * @param req 请求 JSON：{}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "users": [{user_id, username, balance, is_admin, is_approved, created_at}, ...]}
+     */
+    QJsonObject getAllUsers(const QJsonObject& req);
+
+    /**
+     * @brief 修改用户余额（管理员权限）
+     * @param req 请求 JSON：{"user_id": 123, "new_balance": 2000.00}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "余额已修改"}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject setUserBalance(const QJsonObject& req);
+
+    /**
+     * @brief 修改用户信息（管理员权限）
+     * @param req 请求 JSON：{"user_id": 123, "username": "newname", "is_admin": 0/1, "is_approved": 0/1}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "用户信息已更新"}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject updateUserInfo(const QJsonObject& req);
+    
+    /**
+     * @brief 管理员添加新用户
+     * @param req 请求 JSON：{"full_name": "姓名", "id_card": "身份证", "phone": "手机", "birth_date": "出生年月", "address": "地址"}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "用户创建成功", "card_number": "6222...", "password": "123456"}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject createUser(const QJsonObject& req);
+    
+    /**
+     * @brief 管理员重置用户密码
+     * @param req 请求 JSON：{"user_id": 123}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "密码已重置", "password": "新密码"}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject resetPassword(const QJsonObject& req);
+
+    /**
+     * @brief 修改用户信息 (Type 14)
+     */
+    QJsonObject updateProfile(const QJsonObject& req);  
+
+
+private:
+    UserDAO m_userDao;
+    AccountDAO m_accountDao;
+};
+
+#endif // ADMINSERVICE_H
+
+
+====================
+FILE: server\service\transactionservice.cpp
+====================
+
+#include "transactionservice.h"
+#include "../dao/userdao.h"
+#include <QDebug>
+#include <QJsonArray>
+
+TransactionService::TransactionService(QObject* parent)
+    : QObject(parent)
+    , m_txnDao()
+    , m_accountDao()
+{
+}
+
+QJsonObject TransactionService::getTransactions(const QString& userIdStr, const QJsonObject& req)
+{
+    qint64 userId = userIdStr.toLongLong();
+    int limit = req.value("limit").toInt(20);
+    if (limit > 100) limit = 100;
+
+    QList<QVariantMap> txnList = m_txnDao.findByUserId(userId, limit);
+    QJsonArray transactions;
+    UserDAO userDao;
+
+    for (const QVariantMap& txn : txnList) {
+        QJsonObject obj;
+        obj["trans_id"] = txn["id"].toString();
+        obj["amount"] = txn["amount"].toDouble();
+        obj["timestamp"] = txn["timestamp"].toString();
+        obj["remark"] = txn["remark"].toString();
+        obj["type"] = txn["type"].toString();
+
+        qint64 fromAccId = txn["from_account"].toLongLong();
+        qint64 toAccId = txn["to_account"].toLongLong();
+
+        qint64 fromUserId = m_accountDao.getUserIdByAccountId(fromAccId);
+        qint64 toUserId = m_accountDao.getUserIdByAccountId(toAccId);
+
+        QString fromUsername, fromCard, toUsername, toCard;
+        bool admin, approved;
+
+        if (userDao.findById(fromUserId, fromUsername, fromCard, admin, approved)) {
+            obj["from_username"] = fromUsername;
+            obj["from_card_number"] = fromCard;
+        }
+        if (userDao.findById(toUserId, toUsername, toCard, admin, approved)) {
+            obj["to_username"] = toUsername;
+            obj["to_card_number"] = toCard;
+        }
+
+        transactions.append(obj);
+    }
+
+    return {{"status", "success"}, {"msg", "查询成功"}, {"transactions", transactions}};
+}
+
+QJsonObject TransactionService::getAllTransactions(const QJsonObject& req)
+{
+    int limit = req.value("limit").toInt(100);
+    QList<QVariantMap> txnList = m_txnDao.findAll(limit);
+    QJsonArray transactions;
+    UserDAO userDao;
+
+    for (const QVariantMap& txn : txnList) {
+        QJsonObject obj;
+        obj["trans_id"] = txn["id"].toString();
+        obj["amount"] = txn["amount"].toDouble();
+        obj["timestamp"] = txn["timestamp"].toString();
+        obj["remark"] = txn["remark"].toString();
+
+        qint64 fromAccId = txn["from_account"].toLongLong();
+        qint64 toAccId = txn["to_account"].toLongLong();
+
+        qint64 fromUserId = m_accountDao.getUserIdByAccountId(fromAccId);
+        qint64 toUserId = m_accountDao.getUserIdByAccountId(toAccId);
+
+        QString u, c; bool a, ap;
+        if (userDao.findById(fromUserId, u, c, a, ap)) obj["from_card_number"] = c;
+        if (userDao.findById(toUserId, u, c, a, ap)) obj["to_card_number"] = c;
+
+        transactions.append(obj);
+    }
+    return {{"status", "success"}, {"msg", "查询成功"}, {"transactions", transactions}};
+}
+
+QJsonObject TransactionService::errorResponse(const QString& msg)
+{
+    return {{"status", "error"}, {"msg", msg}};
+}
+
+QJsonObject TransactionService::successResponse(const QString& msg, const QJsonArray& transactions)
+{
+    return {{"status", "success"}, {"msg", msg}, {"transactions", transactions}};
+}
+
+
+====================
+FILE: server\service\transactionservice.h
+====================
+
+#ifndef TRANSACTIONSERVICE_H
+#define TRANSACTIONSERVICE_H
+
+#include <QObject>
+#include <QJsonObject>
+#include <QJsonArray>
+#include "../dao/transactiondao.h"
+#include "../dao/accountdao.h"
+
+/**
+ * @brief 交易服务层 - 处理交易相关的业务逻辑
+ *
+ * 职责：
+ * - 查询交易历史
+ * - 格式化交易记录
+ */
+class TransactionService : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit TransactionService(QObject* parent = nullptr);
+    ~TransactionService() = default;
+
+    /**
+     * @brief 查询交易历史
+     * @param userId 用户 ID（UUID）
+     * @param req 请求 JSON：
+     *             - "limit": 返回记录数限制 (int, 可选，默认 20)
+     * @return 响应 JSON：
+     *         成功：{
+     *             "status": "success",
+     *             "msg": "查询成功",
+     *             "transactions": [
+     *                 {
+     *                     "trans_id": 123,
+     *                     "from_account": 1,
+     *                     "to_account": 2,
+     *                     "amount": 100.00,
+     *                     "timestamp": "2026-01-01 12:00:00",
+     *                     "remark": "备注",
+     *                     "direction": "out"  // "out"=转出, "in"=转入
+     *                 },
+     *                 ...
+     *             ]
+     *         }
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject getTransactions(const QString& userId, const QJsonObject& req);
+
+    /**
+     * @brief 查询所有交易记录（管理员用）
+     * @param req 请求参数（可包含 limit 字段）
+     * @return JSON 响应
+     */
+    QJsonObject getAllTransactions(const QJsonObject& req);
+
+private:
+    TransactionDAO m_txnDao;
+    AccountDAO m_accountDao;
+
+    /**
+     * @brief 构造错误响应
+     */
+    QJsonObject errorResponse(const QString& msg);
+
+    /**
+     * @brief 构造成功响应
+     */
+    QJsonObject successResponse(const QString& msg, const QJsonArray& transactions);
+};
+
+#endif // TRANSACTIONSERVICE_H
+
+
+====================
+FILE: server\service\userservice.cpp
+====================
+
+#include "userservice.h"
+#include <QCryptographicHash>
+#include <QDateTime>
+#include <QDebug>
+#include <QRandomGenerator>
+
+UserService::UserService(QObject* parent)
+    : QObject(parent)
+    , m_userDao()
+    , m_accountDao()
+{
+}
+
+QJsonObject UserService::registerUser(const QJsonObject& req)
+{
+    if (!req.contains("username") || !req.contains("password")) {
+        return {{"status", "error"}, {"msg", "缺少必要参数"}};
+    }
+
+    QString username = req["username"].toString();
+    QString password = req["password"].toString();
+
+    if (password.length() != 6) {
+        return {{"status", "error"}, {"msg", "密码必须为6位数字"}};
+    }
+
+    bool isDigitOnly = true;
+    for (const QChar &ch : password) {
+        if (!ch.isDigit()) {
+            isDigitOnly = false;
+            break;
+        }
+    }
+    if (!isDigitOnly) {
+        return {{"status", "error"}, {"msg", "密码必须全部为数字"}};
+    }
+
+    if (m_userDao.exists(username)) {
+        return {{"status", "error"}, {"msg", "用户名已存在"}};
+    }
+
+    QString salt = generateSalt();
+    QString passwordHash = hashPassword(password, salt);
+
+    QString cardNumber = m_userDao.insert(username, passwordHash, salt, false, false);
+    if (cardNumber.isEmpty()) {
+        return {{"status", "error"}, {"msg", "用户创建失败"}};
+    }
+
+    qint64 userId;
+    m_userDao.findIdByCardOrUsername(username, userId);
+    
+    // 为用户创建账户
+    m_accountDao.create(userId, 1000.0);
+
+    return {
+        {"status", "success"},
+        {"msg", "注册成功，请等待管理员审批"},
+        {"card_number", cardNumber}
+    };
+}
+
+QJsonObject UserService::login(const QJsonObject& req)
+{
+    if (!req.contains("username") || !req.contains("password")) {
+        return {{"status", "error"}, {"msg", "缺少必要参数"}};
+    }
+
+    QString account = req["username"].toString(); // 可能是用户名或卡号
+    QString password = req["password"].toString();
+
+    qint64 id;
+    QString username, cardNumber, storedHash, salt, fullName, phone, idCard, birthDate;
+    bool isAdmin, isApproved;
+
+    // 尝试按卡号找
+    bool found = m_userDao.findByCardNumber(account, id, username, storedHash, salt, &isAdmin, &isApproved, &fullName, &phone, &idCard, &birthDate);
+    if (!found) {
+        // 尝试按用户名找
+        found = m_userDao.findByUsername(account, id, cardNumber, storedHash, salt, &isAdmin, &isApproved, &fullName, &phone, &idCard, &birthDate);
+    }
+
+    if (!found) {
+        return {{"status", "error"}, {"msg", "用户不存在"}};
+    }
+
+    if (hashPassword(password, salt) != storedHash) {
+        return {{"status", "error"}, {"msg", "密码错误"}};
+    }
+
+    if (!isAdmin && !isApproved) {
+        return {{"status", "error"}, {"msg", "账户未审批"}};
+    }
+
+    return {
+        {"status", "success"},
+        {"msg", "登录成功"},
+        {"user_id", QString::number(id)},
+        {"card_number", cardNumber},
+        {"username", username},
+        {"full_name", fullName},
+        {"phone", phone},
+        {"id_card", idCard},
+        {"birth_date", birthDate},
+        {"is_admin", isAdmin}
+    };
+}
+
+QString UserService::hashPassword(const QString& password, const QString& salt)
+{
+    return QCryptographicHash::hash((password + salt).toUtf8(), QCryptographicHash::Sha256).toHex();
+}
+
+QString UserService::generateSalt()
+{
+    QByteArray salt;
+    for (int i = 0; i < 16; i++) {
+        salt.append(static_cast<char>(QRandomGenerator::global()->bounded(256)));
+    }
+    return salt.toHex();
+}
+
+QJsonObject UserService::changePassword(const QJsonObject& req)
+{
+    if (!req.contains("user_id") || !req.contains("old_password") || !req.contains("new_password")) {
+        return {{"status", "error"}, {"msg", "缺少必要参数"}};
+    }
+
+    qint64 userId = req["user_id"].toString().toLongLong();
+    QString oldPassword = req["old_password"].toString();
+    QString newPassword = req["new_password"].toString();
+
+    if (newPassword.length() != 6) {
+        return {{"status", "error"}, {"msg", "新密码必须为6位数字"}};
+    }
+
+    bool isDigitOnly = true;
+    for (const QChar &ch : newPassword) {
+        if (!ch.isDigit()) {
+            isDigitOnly = false;
+            break;
+        }
+    }
+    if (!isDigitOnly) {
+        return {{"status", "error"}, {"msg", "新密码必须全部为数字"}};
+    }
+
+    // 获取当前密码哈希和盐
+    QString currentHash, currentSalt;
+    if (!m_userDao.getPasswordInfo(userId, currentHash, currentSalt)) {
+        return {{"status", "error"}, {"msg", "用户不存在"}};
+    }
+
+    // 验证旧密码
+    if (hashPassword(oldPassword, currentSalt) != currentHash) {
+        return {{"status", "error"}, {"msg", "旧密码错误"}};
+    }
+
+    // 生成新密码哈希
+    QString newSalt = generateSalt();
+    QString newHash = hashPassword(newPassword, newSalt);
+
+    // 更新密码
+    if (!m_userDao.updatePassword(userId, newHash, newSalt)) {
+        return {{"status", "error"}, {"msg", "密码修改失败"}};
+    }
+
+    return {{"status", "success"}, {"msg", "密码修改成功"}};
+}
+
+
+====================
+FILE: server\service\userservice.h
+====================
+
+#ifndef USERSERVICE_H
+#define USERSERVICE_H
+
+#include <QObject>
+#include <QJsonObject>
+#include <QString>
+#include "../dao/userdao.h"
+#include "../dao/accountdao.h"
+
+/**
+ * @brief 用户服务层 - 处理用户相关的业务逻辑
+ *
+ * 职责：
+ * - 用户注册（包括创建账户）
+ * - 用户登录验证
+ * - 密码哈希和盐生成
+ */
+class UserService : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit UserService(QObject* parent = nullptr);
+    ~UserService() = default;
+
+    /**
+     * @brief 用户注册
+     * @param req 请求 JSON：{"username": "xxx", "password": "xxx"}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "注册成功", "user_id": 123}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject registerUser(const QJsonObject& req);
+
+    /**
+     * @brief 用户登录
+     * @param req 请求 JSON：{"username": "xxx", "password": "xxx"}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "登录成功", "user_id": 123}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject login(const QJsonObject& req);
+
+    /**
+     * @brief 密码哈希 - SHA256(password + salt)
+     * @param password 明文密码
+     * @param salt 盐值
+     * @return 密码哈希值（十六进制字符串）
+     */
+    static QString hashPassword(const QString& password, const QString& salt);
+
+    /**
+     * @brief 生成随机盐（16 字节）
+     * @return 随机盐值（十六进制字符串，32 个字符）
+     */
+    static QString generateSalt();
+    
+    /**
+     * @brief 用户修改密码（需验证旧密码）
+     * @param req 请求 JSON：{"user_id": "123", "old_password": "xxx", "new_password": "xxx"}
+     * @return 响应 JSON：
+     *         成功：{"status": "success", "msg": "密码修改成功"}
+     *         失败：{"status": "error", "msg": "错误原因"}
+     */
+    QJsonObject changePassword(const QJsonObject& req);
+
+private:
+    UserDAO m_userDao;
+    AccountDAO m_accountDao;
+};
+
+#endif // USERSERVICE_H
