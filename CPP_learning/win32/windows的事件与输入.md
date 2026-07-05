@@ -1,7 +1,7 @@
-## 问  
+## 问_1  
 INPUT是什么类型这里面宏比如INPUT_KEYBOARD、VK_CONTROL、KEYEVENTF_KEYUP这些又是什么？ UINT uSent = SendInput(ARRAYSIZE(inputs), inputs, sizeof(INPUT));这一句有什么用？  
 
-## 答  
+## 答_1  
 这些类型和宏属于 Windows API 中用于模拟键盘和鼠标输入的结构和常量。
 类型和宏的具体含义：
 •	INPUT: 这是一个 Windows API 结构体，用于存储要合成的击键、鼠标移动或按钮点击等事件的信息。它是传递给 SendInput 函数的核心数据结构。
@@ -15,3 +15,32 @@ UINT uSent = SendInput(ARRAYSIZE(inputs), inputs, sizeof(INPUT)); 的作用：
 3.	inputs: 指向包含这些输入事件信息的 INPUT 结构体数组的指针。
 4.	sizeof(INPUT): 传入单个 INPUT 结构体在内存中所占用的字节大小，Windows API 借此来验证数组的每一项大小是否正确。
 5.	UINT uSent = ...: 捕获 SendInput 函数的返回值，该值表示成功插入到系统输入流中的事件数量。如果该值与传入的事件总数（ARRAYSIZE(inputs)）不相等，通常意味着函数调用因某种原因部分或全部失败（例如被防病毒软件或系统的 UI 特权隔离机制拦截）。
+    
+
+## 问_2  
+上述结构体我想看到其大概的结构   
+
+## 答_2  
+由 Windows 头文件定义，INPUT 结构体主要由一个标识类型的字段和一个包含具体设备信息（鼠标、键盘、硬件）的**联合体（Union）**组成。其结构如下：
+```cpp   
+typedef struct tagINPUT {
+    DWORD type;  // 指定输入类型，例如 INPUT_MOUSE, INPUT_KEYBOARD, INPUT_HARDWARE
+    
+    union {
+        MOUSEINPUT    mi; // 如果 type 是 INPUT_MOUSE，则使用此结构来设置鼠标详情
+        KEYBDINPUT    ki; // 如果 type 是 INPUT_KEYBOARD，则使用此结构来设置键盘详情
+        HARDWAREINPUT hi; // 如果 type 是 INPUT_HARDWARE，则使用此结构
+    } DUMMYUNIONNAME;
+} INPUT, *PINPUT, FAR *LPINPUT;   
+
+```   
+由于你提到的是键盘按键相关的宏，里面常用的 KEYBDINPUT (ki) 子结构体如下：
+```cpp   
+typedef struct tagKEYBDINPUT {
+    WORD      wVk;         // 虚拟键码，例如 VK_CONTROL，值为 1~254
+    WORD      wScan;       // 硬件扫描码 (按需设置)
+    DWORD     dwFlags;     // 指定操作标志，如 KEYEVENTF_KEYUP 等
+    DWORD     time;        // 事件时间戳 (通常填 0 让系统自动提供)
+    ULONG_PTR dwExtraInfo; // 额外的关联信息
+} KEYBDINPUT, *PKEYBDINPUT, FAR *LPKEYBDINPUT;
+```
